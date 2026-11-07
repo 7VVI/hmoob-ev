@@ -416,6 +416,23 @@ TEST_CASE("FrameQueue close wakes a blocked pop") {
     t.join();
     REQUIRE_FALSE(pop_result.load());
 }
+
+TEST_CASE("FrameQueue Size tracks queued items") {
+    hmmob::FrameQueue<int> q(4);
+    REQUIRE(q.Size() == 0);
+    REQUIRE(q.Push(1));
+    REQUIRE(q.Push(2));
+    REQUIRE(q.Size() == 2);
+    int value = 0;
+    REQUIRE(q.Pop(value, 10));
+    REQUIRE(q.Size() == 1);
+}
+
+TEST_CASE("FrameQueue rejects push after close") {
+    hmmob::FrameQueue<int> q(2);
+    q.Close();
+    REQUIRE_FALSE(q.Push(1));
+}
 ```
 
 - [ ] **Step 3: 修改 `CMakeLists.txt`**
@@ -487,9 +504,14 @@ QpcClock::QpcClock() {
 }
 
 int64_t QpcClock::NowUs() const {
+    if (frequency_ <= 0) {
+        return 0;
+    }
     LARGE_INTEGER counter{};
     QueryPerformanceCounter(&counter);
-    return (counter.QuadPart * 1'000'000) / frequency_;
+    const int64_t seconds = counter.QuadPart / frequency_;
+    const int64_t remainder = counter.QuadPart % frequency_;
+    return seconds * 1'000'000 + (remainder * 1'000'000) / frequency_;
 }
 
 }  // namespace hmmob
