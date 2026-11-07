@@ -13,7 +13,8 @@ endif()
 find_package(FFMPEG REQUIRED)
 
 add_executable(evspike src/spike/main.cpp)
-target_include_directories(evspike PRIVATE src ${FFMPEG_INCLUDE_DIRS})
+target_include_directories(evspike PRIVATE src)
+target_include_directories(evspike SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
 target_link_libraries(evspike PRIVATE ${FFMPEG_LIBRARIES})
 
 # vcpkg applocal deploys FFmpeg DLLs next to evspike.exe. Install-time deployment lands in Phase 1.
