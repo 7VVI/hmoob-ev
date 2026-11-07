@@ -116,7 +116,7 @@ TEST_CASE("PcmRingBuffer underflow returns available frames") {
 
 ```cpp
 #include <catch2/catch_test_macros.hpp>
-#include <vector>
+#include <stdexcept>
 #include "core/audio/AudioMixer.h"
 #include "core/audio/PcmRingBuffer.h"
 
@@ -136,23 +136,26 @@ TEST_CASE("AudioMixer sums two sources with gains") {
 
     float out[4] = {};
     mixer.Mix(out, 2);
-    REQUIRE(out[0] > 0.39f);
-    REQUIRE(out[0] < 0.41f);
-    REQUIRE(out[2] > 0.39f);
-    REQUIRE(out[2] < 0.41f);
+    // 原始和 0.2 + 2 * 0.1 = 0.4，经 tanh 软限幅后约为 0.37995。
+    REQUIRE(out[0] > 0.379f);
+    REQUIRE(out[0] < 0.381f);
+    REQUIRE(out[2] > 0.379f);
+    REQUIRE(out[2] < 0.381f);
 }
 
-TEST_CASE("AudioMixer clamps to [-1, 1]") {
+TEST_CASE("AudioMixer soft-limits large input without hard clipping") {
     hmmob::PcmRingBuffer system(1, 8);
-    const float loud[] = {9.0f, 9.0f};
+    const float loud[] = {9.0f, -9.0f};
     system.Write(loud, 2);
 
     hmmob::AudioMixer mixer(48000, 1);
     mixer.SetSystemSource(&system);
     float out[2] = {};
     mixer.Mix(out, 2);
-    REQUIRE(out[0] == 1.0f);
-    REQUIRE(out[1] == 1.0f);
+    REQUIRE(out[0] > 0.99f);
+    REQUIRE(out[0] < 1.0f);
+    REQUIRE(out[1] < -0.99f);
+    REQUIRE(out[1] > -1.0f);
 }
 
 TEST_CASE("AudioMixer treats missing sources as silence") {
@@ -184,6 +187,7 @@ $cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7
 #pragma once
 #include <cstddef>
 #include <mutex>
+#include <stdexcept>
 #include <vector>
 
 namespace hmmob {
@@ -191,11 +195,15 @@ namespace hmmob {
 // Ring buffer of interleaved float32 PCM. Frames are [L,R,L,R,...] for stereo.
 // Write drops the oldest frames when full; Read returns the number of frames
 // actually copied and leaves the rest of the destination untouched.
+//
+// 构造时 channels / capacity_frames 必须为正，否则抛出 std::invalid_argument。
+// 内部互斥锁保护，Write（采集线程）与 Read（录制线程）可并发。
 class PcmRingBuffer {
 public:
     PcmRingBuffer(int channels, int capacity_frames)
-        : channels_(channels), capacity_(capacity_frames),
-          data_(static_cast<size_t>(channels) * capacity_frames, 0.0f) {}
+        : channels_(ValidateChannels(channels)),
+          capacity_(ValidateCapacity(capacity_frames)),
+          data_(static_cast<size_t>(channels_) * static_cast<size_t>(capacity_), 0.0f) {}
 
     void Write(const float* interleaved, int frames) {
         if (!interleaved || frames <= 0 || channels_ <= 0 || capacity_ <= 0) {
@@ -217,8 +225,8 @@ public:
         }
     }
 
-    int Read(float* interleaved, int frames) {
-        if (!interleaved || frames <= 0) {
+    [[nodiscard]] int Read(float* interleaved, int frames) {
+        if (!interleaved || frames <= 0 || channels_ <= 0 || capacity_ <= 0) {
             return 0;
         }
         std::lock_guard<std::mutex> lock(mutex_);
@@ -248,6 +256,20 @@ public:
     int capacity_frames() const { return capacity_; }
 
 private:
+    static int ValidateChannels(int channels) {
+        if (channels <= 0) {
+            throw std::invalid_argument("PcmRingBuffer: channels must be positive");
+        }
+        return channels;
+    }
+
+    static int ValidateCapacity(int capacity_frames) {
+        if (capacity_frames <= 0) {
+            throw std::invalid_argument("PcmRingBuffer: capacity_frames must be positive");
+        }
+        return capacity_frames;
+    }
+
     mutable std::mutex mutex_;
     int channels_ = 0;
     int capacity_ = 0;
@@ -264,13 +286,29 @@ private:
 
 ```cpp
 #pragma once
+#include <cstddef>
+#include <vector>
+
 #include "core/audio/PcmRingBuffer.h"
 
 namespace hmmob {
 
+// 两路 float32 PCM 求和后经 tanh 软限幅。
+//
+// 非线程安全：设置与 Mix 应在同一录制线程调用；增益/静音在开始录制前配置。
+// source 为非拥有指针，生命周期必须长于 mixer。source 声道数与 mixer 不一致时
+// 直接忽略，避免按错误的声道数写入 scratch 造成越界。
+//
+// sample_rate / channels 非正时抛出 std::invalid_argument。
 class AudioMixer {
 public:
     AudioMixer(int sample_rate, int channels);
+
+    AudioMixer(const AudioMixer&) = delete;
+    AudioMixer& operator=(const AudioMixer&) = delete;
+    AudioMixer(AudioMixer&&) = delete;
+    AudioMixer& operator=(AudioMixer&&) = delete;
+
     void SetSystemSource(PcmRingBuffer* source);
     void SetMicSource(PcmRingBuffer* source);
     void SetSystemGain(float gain);
@@ -278,9 +316,14 @@ public:
     void SetSystemMuted(bool muted);
     void SetMicMuted(bool muted);
     // Fills `out` with exactly `frames` frames; missing source data is silence.
+    // Muted sources are still drained so their producers never stall.
     void Mix(float* out, int frames);
 
 private:
+    void MixSource(PcmRingBuffer* source, std::vector<float>& scratch, float gain,
+                   bool muted, float* out, int frames);
+
+    // 预留：后续重采样 / 时间戳记账使用，当前未读取。
     int sample_rate_ = 48000;
     int channels_ = 2;
     PcmRingBuffer* system_ = nullptr;
@@ -289,6 +332,9 @@ private:
     float mic_gain_ = 1.0f;
     bool system_muted_ = false;
     bool mic_muted_ = false;
+    // 复用避免每次 Mix 堆分配。
+    std::vector<float> system_scratch_;
+    std::vector<float> mic_scratch_;
 };
 
 }  // namespace hmmob
@@ -298,14 +344,22 @@ private:
 
 ```cpp
 #include "core/audio/AudioMixer.h"
+
 #include <algorithm>
-#include <cstring>
-#include <vector>
+#include <cmath>
+#include <stdexcept>
 
 namespace hmmob {
 
 AudioMixer::AudioMixer(int sample_rate, int channels)
-    : sample_rate_(sample_rate), channels_(channels) {}
+    : sample_rate_(sample_rate), channels_(channels) {
+    if (sample_rate_ <= 0) {
+        throw std::invalid_argument("AudioMixer: sample_rate must be positive");
+    }
+    if (channels_ <= 0) {
+        throw std::invalid_argument("AudioMixer: channels must be positive");
+    }
+}
 
 void AudioMixer::SetSystemSource(PcmRingBuffer* source) { system_ = source; }
 void AudioMixer::SetMicSource(PcmRingBuffer* source) { mic_ = source; }
@@ -314,34 +368,37 @@ void AudioMixer::SetMicGain(float gain) { mic_gain_ = gain; }
 void AudioMixer::SetSystemMuted(bool muted) { system_muted_ = muted; }
 void AudioMixer::SetMicMuted(bool muted) { mic_muted_ = muted; }
 
+void AudioMixer::MixSource(PcmRingBuffer* source, std::vector<float>& scratch,
+                           float gain, bool muted, float* out, int frames) {
+    if (!source || source->channels() != channels_) {
+        // 声道数不一致时直接忽略，避免按 source 声道数写入 mixer 大小的 scratch。
+        return;
+    }
+    const size_t samples = static_cast<size_t>(frames) * static_cast<size_t>(channels_);
+    scratch.assign(samples, 0.0f);
+    const int read = source->Read(scratch.data(), frames);
+    if (muted) {
+        // 已读取排空，保证生产端不会阻塞，但不贡献采样。
+        return;
+    }
+    for (size_t i = 0; i < static_cast<size_t>(read) * static_cast<size_t>(channels_); ++i) {
+        out[i] += scratch[i] * gain;
+    }
+}
+
 void AudioMixer::Mix(float* out, int frames) {
     if (!out || frames <= 0) {
         return;
     }
-    const size_t samples = static_cast<size_t>(frames) * channels_;
+    const size_t samples = static_cast<size_t>(frames) * static_cast<size_t>(channels_);
     std::fill(out, out + samples, 0.0f);
 
-    if (system_) {
-        std::vector<float> temp(samples, 0.0f);
-        const int read = system_->Read(temp.data(), frames);
-        if (!system_muted_) {
-            for (size_t i = 0; i < static_cast<size_t>(read) * channels_; ++i) {
-                out[i] += temp[i] * system_gain_;
-            }
-        }
-    }
-    if (mic_) {
-        std::vector<float> temp(samples, 0.0f);
-        const int read = mic_->Read(temp.data(), frames);
-        if (!mic_muted_) {
-            for (size_t i = 0; i < static_cast<size_t>(read) * channels_; ++i) {
-                out[i] += temp[i] * mic_gain_;
-            }
-        }
-    }
+    MixSource(system_, system_scratch_, system_gain_, system_muted_, out, frames);
+    MixSource(mic_, mic_scratch_, mic_gain_, mic_muted_, out, frames);
 
+    // tanh 软限幅：结果严格落在 (-1, 1) 内，避免硬削波的失真。
     for (size_t i = 0; i < samples; ++i) {
-        out[i] = std::clamp(out[i], -1.0f, 1.0f);
+        out[i] = std::tanh(out[i]);
     }
 }
 
@@ -355,7 +412,7 @@ void AudioMixer::Mix(float* out, int frames) {
 & "...\ctest.exe" --test-dir build/release -C Release --output-on-failure -R "PcmRingBuffer|AudioMixer"
 ```
 
-预期：5 个测试全部通过。
+预期：聚焦的 PcmRingBuffer / AudioMixer 测试全部通过。
 
 - [ ] **Step 9: 提交**
 

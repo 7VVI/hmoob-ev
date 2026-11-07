@@ -1,17 +1,24 @@
 #pragma once
 #include <cstddef>
 #include <mutex>
+#include <stdexcept>
 #include <vector>
 
 namespace hmmob {
 
-// Ring buffer of interleaved float32 PCM. Write drops the oldest frames when
-// full; Read returns the number of frames actually copied.
+// Ring buffer of interleaved float32 PCM. Frames are [L,R,L,R,...] for stereo.
+// Write drops the oldest frames when full; Read returns the number of frames
+// actually copied and leaves the rest of the destination untouched.
+//
+// Throws std::invalid_argument if channels or capacity_frames is not positive.
+// All members are protected by an internal mutex, so Write (producer thread)
+// and Read (consumer thread) may run concurrently.
 class PcmRingBuffer {
 public:
     PcmRingBuffer(int channels, int capacity_frames)
-        : channels_(channels), capacity_(capacity_frames),
-          data_(static_cast<size_t>(channels) * capacity_frames, 0.0f) {}
+        : channels_(ValidateChannels(channels)),
+          capacity_(ValidateCapacity(capacity_frames)),
+          data_(static_cast<size_t>(channels_) * static_cast<size_t>(capacity_), 0.0f) {}
 
     void Write(const float* interleaved, int frames) {
         if (!interleaved || frames <= 0 || channels_ <= 0 || capacity_ <= 0) {
@@ -33,8 +40,8 @@ public:
         }
     }
 
-    int Read(float* interleaved, int frames) {
-        if (!interleaved || frames <= 0) {
+    [[nodiscard]] int Read(float* interleaved, int frames) {
+        if (!interleaved || frames <= 0 || channels_ <= 0 || capacity_ <= 0) {
             return 0;
         }
         std::lock_guard<std::mutex> lock(mutex_);
@@ -64,6 +71,20 @@ public:
     int capacity_frames() const { return capacity_; }
 
 private:
+    static int ValidateChannels(int channels) {
+        if (channels <= 0) {
+            throw std::invalid_argument("PcmRingBuffer: channels must be positive");
+        }
+        return channels;
+    }
+
+    static int ValidateCapacity(int capacity_frames) {
+        if (capacity_frames <= 0) {
+            throw std::invalid_argument("PcmRingBuffer: capacity_frames must be positive");
+        }
+        return capacity_frames;
+    }
+
     mutable std::mutex mutex_;
     int channels_ = 0;
     int capacity_ = 0;
