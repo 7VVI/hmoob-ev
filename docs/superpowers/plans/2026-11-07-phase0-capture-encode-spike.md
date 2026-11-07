@@ -1690,6 +1690,8 @@ git commit -m "feat: add amd amf hevc/h264 encoder"
 
 ## Task 8: FFmpeg MP4 封装
 
+> 实际实现补充：AMF 输出的是 Annex B 码流，MP4 需要 `avcC`/`hvcC` extradata。封装器延迟到首个包再写 header，从首包的 SPS/PPS（H.264）或 VPS/SPS/PPS（HEVC）构建 extradata，设置 `codecpar->extradata` 后再 `avformat_write_header`；否则多数播放器无法解码。新增 `CodecExtradata` 纯函数与 GPU-free 测试。
+
 **Files:**
 - Create: `src/core/mux/FfmpegMuxer.h/.cpp`
 - Modify: `CMakeLists.txt`
