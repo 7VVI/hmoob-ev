@@ -42,19 +42,19 @@ enum class ParseResult { Ok, Help, Error };
 void PrintUsage(std::FILE* stream) {
     std::fprintf(stream,
                  "usage: evspike [options]\n"
-                 "  --output <path>   output MP4 path (default: out.mp4)\n"
-                 "  --seconds <n>     recording length in seconds, > 0 (default: 10)\n"
-                 "  --fps <n>         target frame rate, 1..1000 (default: 60)\n"
-                 "  --codec <name>    hevc or h264 (default: hevc)\n"
-                 "  --display <n>     display index, >= 0 (default: 0)\n"
-                 "  --bitrate <bps>   target bitrate in bits/s, > 0 (default: 50000000)\n"
-                 "  --hdr             request HDR capture (tone mapped to SDR)\n"
-                 "  --no-audio            disable all audio\n"
-                 "  --no-system-audio     disable system loopback audio\n"
-                 "  --no-mic              disable microphone\n"
-                 "  --system-volume <x>   system audio gain, 0..4 (default: 1.0)\n"
-                 "  --mic-volume <x>      microphone gain, 0..4 (default: 1.0)\n"
-                 "  -h, --help        show this help and exit\n");
+                 "  --output <path>         output MP4 path (default: out.mp4)\n"
+                 "  --seconds <n>           recording length in seconds, > 0 (default: 10)\n"
+                 "  --fps <n>               target frame rate, 1..1000 (default: 60)\n"
+                 "  --codec <name>          hevc or h264 (default: hevc)\n"
+                 "  --display <n>           display index, >= 0 (default: 0)\n"
+                 "  --bitrate <bps>         target bitrate in bits/s, > 0 (default: 50000000)\n"
+                 "  --hdr                   request HDR capture (tone mapped to SDR)\n"
+                 "  --no-audio              disable all audio\n"
+                 "  --no-system-audio       disable system loopback audio\n"
+                 "  --no-mic                disable microphone\n"
+                 "  --system-volume <x>     system audio gain, 0..4 (default: 1.0)\n"
+                 "  --mic-volume <x>        microphone gain, 0..4 (default: 1.0)\n"
+                 "  -h, --help              show this help and exit\n");
 }
 
 bool ParseInt(const char* text, int& out) {
@@ -325,6 +325,13 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // Both captures have been filling their rings while the microphone, the
+    // AAC encoder and the muxer were initialized. Drop that pre-roll so the
+    // track starts at frame 0 and both sources stay aligned with each other.
+    if (system_ok) system_capture.ring()->Clear();
+    if (mic_ok) mic_capture.ring()->Clear();
+    const bool audio_track = audio_enabled;
+
     hmmob::QpcClock clock;
     const int64_t start_us = clock.NowUs();
     const int64_t frame_interval_us = 1'000'000 / options.fps;
@@ -352,6 +359,8 @@ int main(int argc, char** argv) {
     int audio_packets = 0;
     int64_t audio_bytes = 0;
     int64_t audio_samples_written = 0;
+    bool audio_encode_failed = false;
+    std::vector<float> audio_buffer;
     const auto on_audio_packet = [&](const hmmob::AacPacket& packet) {
         const int64_t pts_us =
             packet.pts_samples * 1'000'000 / kAudioSampleRate;
@@ -464,6 +473,8 @@ int main(int argc, char** argv) {
                     mic_ok = false;
                 }
                 if (!system_ok && !mic_ok) {
+                    std::fprintf(stderr,
+                                 "audio disabled for the remainder of the recording\n");
                     audio_enabled = false;
                 }
             }
@@ -474,13 +485,20 @@ int main(int argc, char** argv) {
                 const int frames_to_mix =
                     static_cast<int>(target_samples - audio_samples_written);
                 if (frames_to_mix > 0) {
-                    std::vector<float> audio_buffer(
+                    audio_buffer.resize(
                         static_cast<size_t>(frames_to_mix) * kAudioChannels);
                     audio_mixer.Mix(audio_buffer.data(), frames_to_mix);
                     if (!aac.Encode(audio_buffer.data(), frames_to_mix,
-                                    on_audio_packet) ||
-                        write_failed) {
-                        std::fprintf(stderr, "audio encode/write failed\n");
+                                    on_audio_packet)) {
+                        std::fprintf(stderr, "audio encode failed at frame %d\n",
+                                     encoded_frames);
+                        audio_encode_failed = true;
+                        failed = true;
+                        break;
+                    }
+                    if (write_failed) {
+                        std::fprintf(stderr, "audio write failed at frame %d\n",
+                                     encoded_frames);
                         failed = true;
                         break;
                     }
@@ -519,7 +537,9 @@ int main(int argc, char** argv) {
     } else if (write_failed) {
         std::fprintf(stderr, "muxer write failed during encoder flush\n");
         failed = true;
-    } else if (audio_enabled) {
+    } else if (audio_track && !audio_encode_failed) {
+        // Flush even if both captures failed mid-recording: the AAC track was
+        // already declared in the header and must not end abruptly.
         if (!aac.Flush(on_audio_packet)) {
             std::fprintf(stderr, "AAC flush failed\n");
             failed = true;
