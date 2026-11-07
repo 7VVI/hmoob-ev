@@ -4,6 +4,14 @@ Windows 高性能录屏软件。
 
 当前阶段：Phase 0 — DXGI 4K60 抓屏 + AMD AMF 编码 + MP4 验证。
 
+## Phase 0 状态
+
+Phase 0 核心管线（DXGI Desktop Duplication → D3D11 BGRA→NV12 → AMD AMF HEVC/H.264 → FFmpeg MP4）已在本机原生 **2560×1440@60** 下连续运行 10 分钟：输出 36,001 帧、59.99 fps、0 编码错误，MP4 全片解码无错误。完整结果见 [`docs/phase0-report.md`](docs/phase0-report.md)。
+
+> 4K60 与真实 HDR 需要 4K/HDR 显示器及相应 GPU 才能验证，本机（2560×1440 SDR）未覆盖。
+
+`evspike` 录制命令见下方「evspike 用法」。
+
 ## 前置条件
 
 - Windows 10/11 x64
