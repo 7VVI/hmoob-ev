@@ -1449,8 +1449,13 @@ if (audio_enabled && !aac.Initialize(kAudioSampleRate, kAudioChannels, kAudioBit
 hmmob::AudioConfig audio_config;
 audio_config.enabled = audio_enabled;
 if (audio_enabled) {
-    audio_config.extradata = aac.extradata();
+    // 所有字段都从编码器读取，避免 AudioConfig 默认值漂移。
+    audio_config.sample_rate = aac.sample_rate();
+    audio_config.channels = aac.channels();
+    audio_config.bitrate = aac.bitrate();
+    audio_config.frame_size = aac.frame_size();
     audio_config.initial_padding = aac.initial_padding_samples();
+    audio_config.extradata = aac.extradata();
 }
 muxer.Open(..., audio_config);
 ```

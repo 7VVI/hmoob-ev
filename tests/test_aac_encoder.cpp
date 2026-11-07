@@ -125,6 +125,13 @@ TEST_CASE("AacEncoder writes AAC-LC AudioSpecificConfig for 48 kHz stereo") {
     hmmob::AacEncoder encoder;
     REQUIRE(encoder.Initialize(kSampleRate, kChannels, kBitrate));
 
+    // Accessors let callers fill FfmpegMuxer::AudioConfig without duplicating
+    // the encoder's configuration.
+    CHECK(encoder.sample_rate() == kSampleRate);
+    CHECK(encoder.channels() == kChannels);
+    CHECK(encoder.bitrate() == kBitrate);
+    CHECK(encoder.frame_size() == 1024);
+
     const std::vector<uint8_t>& asc = encoder.extradata();
     REQUIRE(asc.size() == 5);
     const int audio_object_type = asc[0] >> 3;
@@ -223,6 +230,10 @@ TEST_CASE("AacEncoder rejects invalid configuration") {
     REQUIRE_FALSE(encoder.Initialize(kSampleRate, kChannels, 0));
     REQUIRE_FALSE(encoder.is_initialized());
     REQUIRE(encoder.initial_padding_samples() == 0);
+    REQUIRE(encoder.sample_rate() == 0);
+    REQUIRE(encoder.channels() == 0);
+    REQUIRE(encoder.bitrate() == 0);
+    REQUIRE(encoder.frame_size() == 0);
     REQUIRE(encoder.extradata().empty());
 
     std::vector<float> pcm(static_cast<size_t>(kSampleRate) * kChannels, 0.0f);

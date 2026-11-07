@@ -61,25 +61,26 @@ struct FfmpegMuxer::Impl {
     AVStream* stream = nullptr;
     AVStream* audio_stream = nullptr;
     std::string codec;
-    AudioConfig audio;
     struct PendingAudio {
         std::vector<uint8_t> data;
         int64_t pts_us;
         int duration_samples;
     };
     std::vector<PendingAudio> pending_audio;
+    int64_t pending_audio_samples = 0;
+    size_t pending_audio_bytes = 0;
     bool header_written = false;
     bool write_failed = false;
 };
 
 FfmpegMuxer::~FfmpegMuxer() {
-    Close();
+    static_cast<void>(Close());
 }
 
 bool FfmpegMuxer::Open(const std::string& path, const std::string& codec,
                        int width, int height, int fps, int bitrate,
                        const AudioConfig& audio) {
-    Close();
+    static_cast<void>(Close());
     if (path.empty() || !IsSupportedCodec(codec) || width <= 0 || height <= 0 ||
         fps <= 0 || bitrate <= 0) {
         std::fprintf(stderr, "FfmpegMuxer: invalid Open arguments\n");
@@ -91,6 +92,11 @@ bool FfmpegMuxer::Open(const std::string& path, const std::string& codec,
         std::fprintf(stderr, "FfmpegMuxer: invalid audio configuration\n");
         return false;
     }
+    if (audio.enabled && audio.extradata.empty()) {
+        std::fprintf(stderr,
+                     "FfmpegMuxer: audio enabled without AudioSpecificConfig\n");
+        return false;
+    }
 
     impl_ = new Impl();
     impl_->codec = codec;
@@ -99,14 +105,14 @@ bool FfmpegMuxer::Open(const std::string& path, const std::string& codec,
                                                 path.c_str());
     if (result < 0 || !impl_->format) {
         LogAvError("avformat_alloc_output_context2", result);
-        Close();
+        static_cast<void>(Close());
         return false;
     }
 
     impl_->stream = avformat_new_stream(impl_->format, nullptr);
     if (!impl_->stream) {
         std::fprintf(stderr, "FfmpegMuxer: avformat_new_stream failed\n");
-        Close();
+        static_cast<void>(Close());
         return false;
     }
 
@@ -128,11 +134,10 @@ bool FfmpegMuxer::Open(const std::string& path, const std::string& codec,
     impl_->stream->r_frame_rate = AVRational{fps, 1};
 
     if (audio.enabled) {
-        impl_->audio = audio;
         impl_->audio_stream = avformat_new_stream(impl_->format, nullptr);
         if (!impl_->audio_stream) {
             std::fprintf(stderr, "FfmpegMuxer: avformat_new_stream(audio) failed\n");
-            Close();
+            static_cast<void>(Close());
             return false;
         }
         AVCodecParameters* audio_parameters = impl_->audio_stream->codecpar;
@@ -140,23 +145,23 @@ bool FfmpegMuxer::Open(const std::string& path, const std::string& codec,
         audio_parameters->codec_id = AV_CODEC_ID_AAC;
         audio_parameters->sample_rate = audio.sample_rate;
         av_channel_layout_default(&audio_parameters->ch_layout, audio.channels);
+        if (audio_parameters->ch_layout.nb_channels != audio.channels) {
+            std::fprintf(stderr,
+                         "FfmpegMuxer: unsupported audio channel count %d\n",
+                         audio.channels);
+            static_cast<void>(Close());
+            return false;
+        }
         // Encoded AAC is not PCM; leave the sample format unspecified.
         audio_parameters->format = AV_SAMPLE_FMT_NONE;
         audio_parameters->frame_size = audio.frame_size;
         audio_parameters->initial_padding = audio.initial_padding;
         audio_parameters->bit_rate = audio.bitrate;
         audio_parameters->codec_tag = 0;
-        if (!audio.extradata.empty()) {
-            audio_parameters->extradata = static_cast<uint8_t*>(av_mallocz(
-                audio.extradata.size() + AV_INPUT_BUFFER_PADDING_SIZE));
-            if (!audio_parameters->extradata) {
-                std::fprintf(stderr, "FfmpegMuxer: failed to allocate audio extradata\n");
-                Close();
-                return false;
-            }
-            std::memcpy(audio_parameters->extradata, audio.extradata.data(),
-                        audio.extradata.size());
-            audio_parameters->extradata_size = static_cast<int>(audio.extradata.size());
+        // Audio is rejected above when extradata is empty.
+        if (!SetExtradata(audio_parameters, audio.extradata)) {
+            static_cast<void>(Close());
+            return false;
         }
         // AAC timestamps are expressed in samples.
         impl_->audio_stream->time_base = AVRational{1, audio.sample_rate};
@@ -165,7 +170,7 @@ bool FfmpegMuxer::Open(const std::string& path, const std::string& codec,
     result = avio_open(&impl_->format->pb, path.c_str(), AVIO_FLAG_WRITE);
     if (result < 0) {
         LogAvError("avio_open", result);
-        Close();
+        static_cast<void>(Close());
         return false;
     }
 
@@ -221,6 +226,8 @@ bool FfmpegMuxer::WritePacket(const uint8_t* data, size_t size,
             }
         }
         impl_->pending_audio.clear();
+        impl_->pending_audio_samples = 0;
+        impl_->pending_audio_bytes = 0;
     }
 
     const bool hevc = impl_->codec == "hevc";
@@ -261,15 +268,43 @@ bool FfmpegMuxer::WritePacket(const uint8_t* data, size_t size,
 
 bool FfmpegMuxer::WriteAudioPacket(const uint8_t* data, size_t size,
                                    int64_t pts_us, int duration_samples) {
-    if (!impl_ || !impl_->format || !impl_->audio_stream || !data || size == 0 ||
-        impl_->write_failed) {
+    if (!impl_ || !impl_->format || impl_->write_failed) {
+        return false;
+    }
+    if (!impl_->audio_stream) {
+        std::fprintf(stderr,
+                     "FfmpegMuxer: WriteAudioPacket called without an audio stream\n");
+        return false;
+    }
+    if (!data || size == 0) {
+        std::fprintf(stderr, "FfmpegMuxer: WriteAudioPacket called without data\n");
+        impl_->write_failed = true;
         return false;
     }
 
     if (!impl_->header_written) {
+        // Bound the pre-header buffer by time, samples, packet count and
+        // bytes so non-monotonic or bogus timestamps cannot grow it without
+        // limit.
         constexpr int64_t kMaxPendingUs = 5'000'000;
-        if (!impl_->pending_audio.empty() &&
-            pts_us - impl_->pending_audio.front().pts_us > kMaxPendingUs) {
+        const AVCodecParameters* parameters = impl_->audio_stream->codecpar;
+        const int64_t max_samples = int64_t{5} * parameters->sample_rate;
+        const size_t max_packets =
+            parameters->frame_size > 0
+                ? static_cast<size_t>(max_samples / parameters->frame_size) + 2
+                : 1024;
+        const int64_t max_bytes =
+            int64_t{5} * parameters->bit_rate / 8 + 65536;
+        const bool too_old =
+            !impl_->pending_audio.empty() &&
+            pts_us - impl_->pending_audio.front().pts_us > kMaxPendingUs;
+        const bool too_many_samples =
+            impl_->pending_audio_samples + duration_samples > max_samples;
+        const bool too_many_packets =
+            impl_->pending_audio.size() + 1 > max_packets;
+        const bool too_many_bytes =
+            impl_->pending_audio_bytes + size > static_cast<size_t>(max_bytes);
+        if (too_old || too_many_samples || too_many_packets || too_many_bytes) {
             std::fprintf(stderr,
                          "FfmpegMuxer: audio buffer overflow before video header\n");
             impl_->write_failed = true;
@@ -277,15 +312,21 @@ bool FfmpegMuxer::WriteAudioPacket(const uint8_t* data, size_t size,
         }
         impl_->pending_audio.push_back(
             {std::vector<uint8_t>(data, data + size), pts_us, duration_samples});
+        impl_->pending_audio_samples += duration_samples;
+        impl_->pending_audio_bytes += size;
         return true;
     }
 
     AVPacket* packet = av_packet_alloc();
     if (!packet) {
+        std::fprintf(stderr, "FfmpegMuxer: failed to allocate audio packet\n");
+        impl_->write_failed = true;
         return false;
     }
     if (av_new_packet(packet, static_cast<int>(size)) < 0) {
+        std::fprintf(stderr, "FfmpegMuxer: failed to allocate audio packet data\n");
         av_packet_free(&packet);
+        impl_->write_failed = true;
         return false;
     }
     std::memcpy(packet->data, data, size);
@@ -314,13 +355,10 @@ bool FfmpegMuxer::Close() {
         return true;
     }
 
-    // A session that never wrote a header produced no MP4, and a latched write
-    // failure means the output is incomplete; both are Close failures.
+    // A session that never wrote a header produced no MP4 (including when only
+    // audio was buffered), and a latched write failure means the output is
+    // incomplete; both are Close failures.
     bool ok = impl_->header_written && !impl_->write_failed;
-    // Audio that was only ever buffered means no MP4 was produced.
-    if (!impl_->header_written && !impl_->pending_audio.empty()) {
-        ok = false;
-    }
     if (!impl_->header_written && impl_->format && impl_->format->pb) {
         std::fprintf(stderr, "FfmpegMuxer: closing without a written header\n");
     }

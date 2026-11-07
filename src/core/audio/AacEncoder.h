@@ -43,6 +43,13 @@ public:
     [[nodiscard]] bool Flush(const PacketCallback& callback);
     void Shutdown();
     [[nodiscard]] bool is_initialized() const;
+    // Configured stream parameters; 0 when uninitialized. Use these to fill
+    // FfmpegMuxer::AudioConfig so the container matches the encoded stream.
+    [[nodiscard]] int sample_rate() const;
+    [[nodiscard]] int channels() const;
+    [[nodiscard]] int bitrate() const;
+    // Encoder frame size in samples; 0 when uninitialized.
+    [[nodiscard]] int frame_size() const;
     // Encoder delay in samples; 0 when uninitialized or unsupported.
     [[nodiscard]] int initial_padding_samples() const;
     // AudioSpecificConfig; copy into the MP4 audio codecpar before header.

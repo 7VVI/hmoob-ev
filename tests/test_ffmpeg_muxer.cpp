@@ -66,6 +66,35 @@ Bytes SyntheticH264InterFrame() {
     return {0x00, 0x00, 0x00, 0x01, 0x41, 0x9A, 0x02, 0x03};
 }
 
+// AAC-LC 48 kHz stereo AudioSpecificConfig: base ASC plus the SBR-absent sync
+// extension, exactly as FFmpeg's native AAC encoder emits it.
+const Bytes kTestAacExtradata = {0x11, 0x90, 0x56, 0xE5, 0x00};
+
+constexpr int kTestAudioSampleRate = 48000;
+constexpr int kTestAudioFrameSize = 1024;
+
+hmmob::AudioConfig TestAudioConfig() {
+    hmmob::AudioConfig audio;
+    audio.enabled = true;
+    audio.sample_rate = kTestAudioSampleRate;
+    audio.channels = 2;
+    audio.bitrate = 192000;
+    audio.frame_size = kTestAudioFrameSize;
+    audio.initial_padding = kTestAudioFrameSize;
+    audio.extradata = kTestAacExtradata;
+    return audio;
+}
+
+// The muxer copies payloads verbatim, so any bytes stand in for AAC access
+// units when the test only inspects container structure.
+Bytes DummyAacPacket(uint8_t seed, size_t size = 64) {
+    return Bytes(size, seed);
+}
+
+int64_t AudioSamplesToUs(int64_t samples) {
+    return samples * 1'000'000 / kTestAudioSampleRate;
+}
+
 struct MuxRun {
     int packets_written = 0;
     int keyframes = 0;
@@ -271,13 +300,16 @@ TEST_CASE("FFmpeg muxer writes HEVC+AAC MP4", "[integration][amf]") {
 
     TempFile output{UniqueTempPath("hevc-aac")};
     const std::string path = output.path.string();
+    const int expected_initial_padding = aac.initial_padding_samples();
+    const int expected_extradata_size =
+        static_cast<int>(aac.extradata().size());
 
     hmmob::AudioConfig audio;
     audio.enabled = true;
-    audio.sample_rate = kAudioSampleRate;
-    audio.channels = kAudioChannels;
-    audio.bitrate = kAudioBitrate;
-    audio.frame_size = kAudioFrameSize;
+    audio.sample_rate = aac.sample_rate();
+    audio.channels = aac.channels();
+    audio.bitrate = aac.bitrate();
+    audio.frame_size = aac.frame_size();
     audio.initial_padding = aac.initial_padding_samples();
     audio.extradata = aac.extradata();
 
@@ -347,8 +379,8 @@ TEST_CASE("FFmpeg muxer writes HEVC+AAC MP4", "[integration][amf]") {
     CHECK(audio_stream->codecpar->sample_rate == kAudioSampleRate);
     CHECK(audio_stream->codecpar->ch_layout.nb_channels == kAudioChannels);
     CHECK(audio_stream->codecpar->frame_size == kAudioFrameSize);
-    CHECK(audio_stream->codecpar->initial_padding == kAudioFrameSize);
-    CHECK(audio_stream->codecpar->extradata_size == 5);
+    CHECK(audio_stream->codecpar->initial_padding == expected_initial_padding);
+    CHECK(audio_stream->codecpar->extradata_size == expected_extradata_size);
 
     const AVCodec* audio_decoder = avcodec_find_decoder(AV_CODEC_ID_AAC);
     REQUIRE(audio_decoder != nullptr);
@@ -377,6 +409,7 @@ TEST_CASE("FFmpeg muxer writes HEVC+AAC MP4", "[integration][amf]") {
             if (first_audio_pts == AV_NOPTS_VALUE) {
                 first_audio_pts = packet->pts;
             }
+            CHECK(packet->pts == packet->dts);
             audio_durations.push_back(packet->duration);
             REQUIRE(avcodec_send_packet(audio_decoder_context, packet) >= 0);
             int receive = 0;
@@ -403,6 +436,9 @@ TEST_CASE("FFmpeg muxer writes HEVC+AAC MP4", "[integration][amf]") {
     CHECK(video_packets_written >= kAvFrameCount);
     CHECK(audio_packets_written > 0);
     CHECK(audio_frames_decoded >= 1);
+    CHECK(first_audio_pts == -kAudioFrameSize);
+    CHECK(audio_durations.size() ==
+          static_cast<size_t>(audio_packets_written));
     // ~94 packets for 2 s at 1024 samples each; the final one may be shorter.
     REQUIRE(audio_durations.size() >= 55);
     for (size_t i = 0; i + 1 < audio_durations.size(); ++i) {
@@ -419,6 +455,8 @@ TEST_CASE("FFmpeg muxer writes HEVC+AAC MP4", "[integration][amf]") {
     CHECK(format_seconds < 2.2);
     REQUIRE(video_stream->duration != AV_NOPTS_VALUE);
     REQUIRE(audio_stream->duration != AV_NOPTS_VALUE);
+    CHECK(audio_stream->duration ==
+          static_cast<int64_t>(kAvFrameCount) * kAudioFramesPerVideo);
     const double video_seconds = static_cast<double>(video_stream->duration) *
                                  av_q2d(video_stream->time_base);
     const double audio_seconds = static_cast<double>(audio_stream->duration) *
@@ -433,12 +471,239 @@ TEST_CASE("FFmpeg muxer writes HEVC+AAC MP4", "[integration][amf]") {
                     << " video start_time=" << video_stream->start_time
                     << " last audio duration="
                     << (audio_durations.empty() ? -1 : audio_durations.back()));
-    CHECK(std::abs(video_seconds - audio_seconds) < 0.05);
+    CHECK(std::abs(video_seconds - audio_seconds) < 0.005);
 
     av_frame_free(&frame);
     av_packet_free(&packet);
     avcodec_free_context(&audio_decoder_context);
     avformat_close_input(&format);
+}
+
+TEST_CASE("FFmpeg muxer buffers audio until the video header is written",
+          "[integration][amf]") {
+    constexpr int kAudioSampleRate = 48000;
+    constexpr int kAudioChannels = 2;
+    constexpr int kAudioBitrate = 192000;
+    constexpr int kAudioFrameSize = 1024;
+    constexpr int kVideoFrameCount = 30;
+    constexpr int kAudioFramesPerVideo = kAudioSampleRate / kFps;
+    constexpr double kPi = 3.14159265358979323846;
+
+    hmmob::D3D11Device d3d;
+    if (!d3d.Create()) {
+        SKIP("D3D11 device unavailable");
+    }
+
+    hmmob::AmfEncoder encoder;
+    if (!encoder.Initialize(d3d.device(), "hevc", kWidth, kHeight, kFps, kBitrate)) {
+        SKIP("AMF hevc encoder unavailable");
+    }
+
+    hmmob::AacEncoder aac;
+    REQUIRE(aac.Initialize(kAudioSampleRate, kAudioChannels, kAudioBitrate));
+    REQUIRE(aac.initial_padding_samples() == kAudioFrameSize);
+    REQUIRE_FALSE(aac.extradata().empty());
+
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = kWidth;
+    desc.Height = kHeight;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_NV12;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+    REQUIRE(SUCCEEDED(d3d.device()->CreateTexture2D(&desc, nullptr, &texture)));
+
+    TempFile output{UniqueTempPath("audio-buffered")};
+    const std::string path = output.path.string();
+
+    hmmob::AudioConfig audio;
+    audio.enabled = true;
+    audio.sample_rate = kAudioSampleRate;
+    audio.channels = kAudioChannels;
+    audio.bitrate = kAudioBitrate;
+    audio.frame_size = kAudioFrameSize;
+    audio.initial_padding = aac.initial_padding_samples();
+    audio.extradata = aac.extradata();
+
+    hmmob::FfmpegMuxer muxer;
+    REQUIRE(muxer.Open(path, "hevc", kWidth, kHeight, kFps, kBitrate, audio));
+
+    bool video_started = false;
+    int audio_packets_written = 0;
+    std::vector<int64_t> pre_header_pts;
+    std::vector<int> pre_header_sizes;
+    const auto write_audio = [&](const hmmob::AacPacket& packet) {
+        REQUIRE_FALSE(packet.data.empty());
+        const int64_t pts_us =
+            packet.pts_samples * 1'000'000 / kAudioSampleRate;
+        REQUIRE(muxer.WriteAudioPacket(packet.data.data(), packet.data.size(),
+                                       pts_us, packet.duration_samples));
+        if (!video_started) {
+            pre_header_pts.push_back(packet.pts_samples);
+            pre_header_sizes.push_back(static_cast<int>(packet.data.size()));
+        }
+        ++audio_packets_written;
+    };
+
+    // Feed AAC frames before any video packet. WriteAudioPacket must accept
+    // and buffer them because the header does not exist yet. The encoder
+    // delays its first packet, so feed until one actually arrives.
+    std::vector<float> pcm(
+        static_cast<size_t>(kAudioFramesPerVideo) * kAudioChannels);
+    int64_t audio_samples_fed = 0;
+    while (pre_header_pts.empty()) {
+        for (int f = 0; f < kAudioFrameSize; ++f) {
+            const double t =
+                static_cast<double>(audio_samples_fed + f) / kAudioSampleRate;
+            const float sample =
+                static_cast<float>(0.5 * std::sin(2.0 * kPi * 440.0 * t));
+            pcm[static_cast<size_t>(f) * kAudioChannels + 0] = sample;
+            pcm[static_cast<size_t>(f) * kAudioChannels + 1] = sample;
+        }
+        REQUIRE(aac.Encode(pcm.data(), kAudioFrameSize, write_audio));
+        audio_samples_fed += kAudioFrameSize;
+        REQUIRE(audio_samples_fed <= kAudioSampleRate);
+    }
+    REQUIRE(pre_header_pts.size() >= 1);
+    CHECK(pre_header_pts.front() == -kAudioFrameSize);
+    for (size_t i = 1; i < pre_header_pts.size(); ++i) {
+        CHECK(pre_header_pts[i] == pre_header_pts[i - 1] + kAudioFrameSize);
+    }
+
+    int video_packets_written = 0;
+    const auto write_video = [&](const hmmob::AmfPacket& packet) {
+        REQUIRE_FALSE(packet.data.empty());
+        REQUIRE(muxer.WritePacket(packet.data.data(), packet.data.size(),
+                                  packet.pts_us, packet.keyframe));
+        ++video_packets_written;
+    };
+
+    std::vector<uint8_t> nv12(kWidth * kHeight * 3 / 2, 128);
+    nv12[0] = 0;
+    nv12[1] = 0;
+    d3d.context()->UpdateSubresource(texture.Get(), 0, nullptr, nv12.data(),
+                                     kWidth, kWidth * kHeight);
+    REQUIRE(encoder.Encode(texture.Get(), 0, write_video));
+    video_started = true;
+
+    for (int i = 1; i < kVideoFrameCount; ++i) {
+        for (int f = 0; f < kAudioFramesPerVideo; ++f) {
+            const double t =
+                static_cast<double>(audio_samples_fed + f) / kAudioSampleRate;
+            const float sample =
+                static_cast<float>(0.5 * std::sin(2.0 * kPi * 440.0 * t));
+            pcm[static_cast<size_t>(f) * kAudioChannels + 0] = sample;
+            pcm[static_cast<size_t>(f) * kAudioChannels + 1] = sample;
+        }
+        REQUIRE(aac.Encode(pcm.data(), kAudioFramesPerVideo, write_audio));
+        audio_samples_fed += kAudioFramesPerVideo;
+
+        nv12[0] = static_cast<uint8_t>((i * 37) & 0xFF);
+        nv12[1] = static_cast<uint8_t>((i * 73) & 0xFF);
+        d3d.context()->UpdateSubresource(texture.Get(), 0, nullptr, nv12.data(),
+                                         kWidth, kWidth * kHeight);
+        REQUIRE(encoder.Encode(texture.Get(), i * kFrameUs, write_video));
+    }
+    REQUIRE(aac.Flush(write_audio));
+    REQUIRE(encoder.Flush(write_video));
+    REQUIRE(muxer.Close());
+
+    AVFormatContext* format = nullptr;
+    REQUIRE(avformat_open_input(&format, path.c_str(), nullptr, nullptr) >= 0);
+    REQUIRE(format != nullptr);
+    REQUIRE(avformat_find_stream_info(format, nullptr) >= 0);
+
+    const int video_index =
+        av_find_best_stream(format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    const int audio_index =
+        av_find_best_stream(format, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    REQUIRE(video_index >= 0);
+    REQUIRE(audio_index >= 0);
+
+    AVPacket* packet = av_packet_alloc();
+    REQUIRE(packet != nullptr);
+    std::vector<int64_t> audio_pts;
+    std::vector<int> audio_sizes;
+    std::vector<int64_t> audio_durations;
+    int video_packets_demuxed = 0;
+    int read_result = 0;
+    while ((read_result = av_read_frame(format, packet)) >= 0) {
+        if (packet->stream_index == video_index) {
+            ++video_packets_demuxed;
+        } else if (packet->stream_index == audio_index) {
+            audio_pts.push_back(packet->pts);
+            audio_sizes.push_back(packet->size);
+            audio_durations.push_back(packet->duration);
+        }
+        av_packet_unref(packet);
+    }
+    REQUIRE(read_result == AVERROR_EOF);
+    av_packet_free(&packet);
+    avformat_close_input(&format);
+
+    // The two pre-header packets must appear first, unchanged and in order.
+    REQUIRE(audio_pts.size() >= pre_header_pts.size());
+    for (size_t i = 0; i < pre_header_pts.size(); ++i) {
+        INFO("pre-header packet " << i << " pts=" << audio_pts[i]);
+        CHECK(audio_pts[i] == pre_header_pts[i]);
+        CHECK(audio_sizes[i] == pre_header_sizes[i]);
+    }
+    CHECK(video_packets_written >= kVideoFrameCount);
+    CHECK(video_packets_demuxed >= kVideoFrameCount);
+    CHECK(audio_pts.size() > pre_header_pts.size());
+
+    // The first packet keeps its negative priming PTS; the timeline is
+    // contiguous (each PTS advances by the previous packet's duration).
+    REQUIRE_FALSE(audio_pts.empty());
+    {
+        INFO("written video=" << video_packets_written
+                              << " demuxed video=" << video_packets_demuxed
+                              << " demuxed audio=" << audio_pts.size()
+                              << " pre-header audio=" << pre_header_pts.size()
+                              << " first audio pts=" << audio_pts.front());
+        CHECK(audio_pts.front() == -kAudioFrameSize);
+    }
+    int64_t expected_pts = audio_pts.front();
+    for (size_t i = 0; i < audio_pts.size(); ++i) {
+        INFO("audio packet " << i << " pts=" << audio_pts[i]
+                             << " expected=" << expected_pts);
+        CHECK(audio_pts[i] == expected_pts);
+        expected_pts += audio_durations[i];
+    }
+}
+
+TEST_CASE("FfmpegMuxer rejects enabled audio without extradata", "[mux]") {
+    TempFile output{UniqueTempPath("audio-no-extradata")};
+    const std::string path = output.path.string();
+
+    hmmob::AudioConfig audio;
+    audio.enabled = true;
+
+    hmmob::FfmpegMuxer muxer;
+    // AAC in MP4 requires an AudioSpecificConfig.
+    CHECK_FALSE(muxer.Open(path, "h264", kWidth, kHeight, kFps, kBitrate, audio));
+    CHECK_FALSE(std::filesystem::exists(output.path));
+
+    // Every audio field must be positive.
+    audio.extradata = {0x11, 0x90};
+    audio.sample_rate = 0;
+    CHECK_FALSE(muxer.Open(path, "h264", kWidth, kHeight, kFps, kBitrate, audio));
+    audio.sample_rate = 48000;
+    audio.channels = 0;
+    CHECK_FALSE(muxer.Open(path, "h264", kWidth, kHeight, kFps, kBitrate, audio));
+    audio.channels = 2;
+    audio.bitrate = 0;
+    CHECK_FALSE(muxer.Open(path, "h264", kWidth, kHeight, kFps, kBitrate, audio));
+    audio.bitrate = 192000;
+    audio.frame_size = 0;
+    CHECK_FALSE(muxer.Open(path, "h264", kWidth, kHeight, kFps, kBitrate, audio));
+
+    CHECK_FALSE(std::filesystem::exists(output.path));
+    CHECK(muxer.Close());
 }
 
 TEST_CASE("FfmpegMuxer rejects invalid Open arguments", "[mux]") {
@@ -496,4 +761,139 @@ TEST_CASE("FfmpegMuxer writes synthetic access units", "[mux]") {
     REQUIRE(muxer.Close());
     CHECK(muxer.Close());  // Idempotent after a successful session.
     CHECK(std::filesystem::file_size(output.path) > 0);
+}
+
+TEST_CASE("FfmpegMuxer buffers audio packets before the video header", "[mux]") {
+    TempFile output{UniqueTempPath("audio-preheader")};
+    const std::string path = output.path.string();
+    hmmob::FfmpegMuxer muxer;
+    REQUIRE(muxer.Open(path, "h264", kWidth, kHeight, kFps, kBitrate,
+                       TestAudioConfig()));
+
+    const Bytes first = DummyAacPacket(0x11);
+    const Bytes second = DummyAacPacket(0x22, 96);
+    REQUIRE(muxer.WriteAudioPacket(first.data(), first.size(),
+                                   AudioSamplesToUs(-kTestAudioFrameSize),
+                                   kTestAudioFrameSize));
+    REQUIRE(muxer.WriteAudioPacket(second.data(), second.size(),
+                                   AudioSamplesToUs(0), kTestAudioFrameSize));
+
+    // The first video packet writes the header and flushes the buffer.
+    const Bytes keyframe = SyntheticH264Keyframe();
+    REQUIRE(muxer.WritePacket(keyframe.data(), keyframe.size(), 0, true));
+    REQUIRE(muxer.Close());
+
+    AVFormatContext* format = nullptr;
+    REQUIRE(avformat_open_input(&format, path.c_str(), nullptr, nullptr) >= 0);
+    REQUIRE(format != nullptr);
+    REQUIRE(avformat_find_stream_info(format, nullptr) >= 0);
+
+    const int audio_index =
+        av_find_best_stream(format, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    REQUIRE(audio_index >= 0);
+    const AVStream* audio_stream = format->streams[audio_index];
+    CHECK(audio_stream->codecpar->sample_rate == kTestAudioSampleRate);
+    CHECK(audio_stream->codecpar->ch_layout.nb_channels == 2);
+    CHECK(audio_stream->time_base.num == 1);
+    CHECK(audio_stream->time_base.den == kTestAudioSampleRate);
+
+    AVPacket* packet = av_packet_alloc();
+    REQUIRE(packet != nullptr);
+    std::vector<int64_t> pts;
+    std::vector<Bytes> payloads;
+    int read_result = 0;
+    while ((read_result = av_read_frame(format, packet)) >= 0) {
+        if (packet->stream_index == audio_index) {
+            pts.push_back(packet->pts);
+            payloads.emplace_back(packet->data, packet->data + packet->size);
+        }
+        av_packet_unref(packet);
+    }
+    REQUIRE(read_result == AVERROR_EOF);
+    av_packet_free(&packet);
+    avformat_close_input(&format);
+
+    REQUIRE(payloads.size() == 2);
+    CHECK(pts[0] == -kTestAudioFrameSize);
+    CHECK(pts[1] == 0);
+    CHECK(payloads[0] == first);
+    CHECK(payloads[1] == second);
+}
+
+TEST_CASE("FfmpegMuxer caps audio buffered before the video header", "[mux]") {
+    TempFile output{UniqueTempPath("audio-overflow")};
+    hmmob::FfmpegMuxer muxer;
+    REQUIRE(muxer.Open(output.path.string(), "h264", kWidth, kHeight, kFps,
+                       kBitrate, TestAudioConfig()));
+
+    const Bytes payload = DummyAacPacket(0x33);
+    REQUIRE(muxer.WriteAudioPacket(payload.data(), payload.size(), 0,
+                                   kTestAudioFrameSize));
+    // More than 5 s after the first buffered packet overflows the buffer.
+    CHECK_FALSE(muxer.WriteAudioPacket(payload.data(), payload.size(),
+                                       5'000'001, kTestAudioFrameSize));
+    // The failure is sticky: audio and video writes both fail afterwards.
+    CHECK_FALSE(muxer.WriteAudioPacket(payload.data(), payload.size(), 0,
+                                       kTestAudioFrameSize));
+    const Bytes keyframe = SyntheticH264Keyframe();
+    CHECK_FALSE(muxer.WritePacket(keyframe.data(), keyframe.size(), 0, true));
+    CHECK_FALSE(muxer.Close());
+}
+
+TEST_CASE("FfmpegMuxer caps pre-header audio by sample count", "[mux]") {
+    TempFile output{UniqueTempPath("audio-sample-cap")};
+    hmmob::FfmpegMuxer muxer;
+    REQUIRE(muxer.Open(output.path.string(), "h264", kWidth, kHeight, kFps,
+                       kBitrate, TestAudioConfig()));
+
+    const Bytes payload = DummyAacPacket(0x44);
+    // Non-monotonic (decreasing) PTS defeat the timestamp check, so the
+    // five-second sample cap must stop the buffer: 5 * 48000 / 1024 = 234
+    // packets fit, the 235th is rejected.
+    int accepted = 0;
+    int rejected_at = -1;
+    for (int i = 0; i < 400; ++i) {
+        const int64_t pts_us = -static_cast<int64_t>(i) * 21333;
+        if (!muxer.WriteAudioPacket(payload.data(), payload.size(), pts_us,
+                                    kTestAudioFrameSize)) {
+            rejected_at = i;
+            break;
+        }
+        ++accepted;
+    }
+    CHECK(rejected_at == 234);
+    CHECK(accepted == 234);
+    CHECK_FALSE(muxer.Close());
+}
+
+TEST_CASE("FfmpegMuxer Close fails after only audio was buffered", "[mux]") {
+    TempFile output{UniqueTempPath("audio-only")};
+    hmmob::FfmpegMuxer muxer;
+    REQUIRE(muxer.Open(output.path.string(), "h264", kWidth, kHeight, kFps,
+                       kBitrate, TestAudioConfig()));
+
+    const Bytes payload = DummyAacPacket(0x55);
+    REQUIRE(muxer.WriteAudioPacket(payload.data(), payload.size(), 0,
+                                   kTestAudioFrameSize));
+    CHECK_FALSE(muxer.Close());
+    CHECK(std::filesystem::exists(output.path));
+    CHECK(std::filesystem::file_size(output.path) == 0);
+    CHECK(muxer.Close());  // Idempotent.
+}
+
+TEST_CASE("FfmpegMuxer rejects audio packets when audio is disabled", "[mux]") {
+    TempFile output{UniqueTempPath("audio-disabled")};
+    hmmob::FfmpegMuxer muxer;
+    REQUIRE(muxer.Open(output.path.string(), "h264", kWidth, kHeight, kFps,
+                       kBitrate));
+
+    const Bytes payload = DummyAacPacket(0x66);
+    CHECK_FALSE(muxer.WriteAudioPacket(payload.data(), payload.size(), 0,
+                                       kTestAudioFrameSize));
+
+    // A missing audio stream is a caller error, not a write failure: the
+    // video session continues normally.
+    const Bytes keyframe = SyntheticH264Keyframe();
+    REQUIRE(muxer.WritePacket(keyframe.data(), keyframe.size(), 0, true));
+    REQUIRE(muxer.Close());
 }

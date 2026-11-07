@@ -8,9 +8,9 @@ namespace hmmob {
 
 // AAC stream settings for FfmpegMuxer. `extradata` is the AudioSpecificConfig
 // produced by AacEncoder; `initial_padding` is its encoder priming delay in
-// samples. The muxer records the priming delay in the track metadata and must
-// keep the first packet's negative PTS: FFmpeg's movenc turns that into the
-// MP4 edit list that removes the priming from the presentation timeline.
+// samples. In FFmpeg 9 `codecpar->initial_padding` is metadata only: movenc
+// derives the MP4 edit list from the negative first DTS, so the muxer must
+// keep the first packet's negative PTS rather than clamp it.
 struct AudioConfig {
     bool enabled = false;
     int sample_rate = 48000;
@@ -31,8 +31,9 @@ struct AudioConfig {
 //    VPS/SPS/PPS (HEVC); otherwise the session fails and no further packet
 //    is written.
 //  - Audio packets written before the video header exists are buffered (at
-//    most 5 seconds; exceeding that latches a failure) and flushed in order
-//    once the header is written.
+//    most 5 seconds by timestamp, sample count, packet count or byte count;
+//    exceeding any limit latches a failure) and flushed in order once the
+//    header is written.
 //  - WritePacket and WriteAudioPacket return false when the packet was not
 //    written. Once a write fails the muxer stays failed: later calls return
 //    false until Close.
@@ -41,6 +42,9 @@ struct AudioConfig {
 //    created by Open is left in place (empty when nothing was muxed). Close
 //    still releases all resources and is idempotent; a default-constructed or
 //    already-closed muxer returns true.
+//
+// Not thread-safe: Open, WritePacket, WriteAudioPacket and Close must be
+// called from a single thread.
 class FfmpegMuxer {
 public:
     FfmpegMuxer() = default;
@@ -52,18 +56,19 @@ public:
     // created immediately, but the container header is not written until the
     // first WritePacket supplies the codec extradata. When `audio.enabled` is
     // true, an AAC track is declared from `audio.extradata`.
-    bool Open(const std::string& path, const std::string& codec,
-              int width, int height, int fps, int bitrate,
-              const AudioConfig& audio = {});
+    [[nodiscard]] bool Open(const std::string& path, const std::string& codec,
+                            int width, int height, int fps, int bitrate,
+                            const AudioConfig& audio = {});
     // Writes one Annex B access unit. See the class contract above.
-    bool WritePacket(const uint8_t* data, size_t size, int64_t pts_us, bool keyframe);
+    [[nodiscard]] bool WritePacket(const uint8_t* data, size_t size,
+                                   int64_t pts_us, bool keyframe);
     // Writes one AAC access unit. `pts_us` is the presentation timestamp in
     // microseconds and `duration_samples` the decoded sample count, both from
     // AacPacket. Negative first PTS (AAC priming) is preserved, not clamped.
-    bool WriteAudioPacket(const uint8_t* data, size_t size, int64_t pts_us,
-                          int duration_samples);
+    [[nodiscard]] bool WriteAudioPacket(const uint8_t* data, size_t size,
+                                        int64_t pts_us, int duration_samples);
     // Finalizes and releases the file. See the class contract above.
-    bool Close();
+    [[nodiscard]] bool Close();
 
 private:
     struct Impl;

@@ -31,7 +31,9 @@ struct AacEncoder::Impl {
     SwrContext* swr = nullptr;
     // Interleaved float32 samples not yet handed to the encoder.
     std::vector<float> pending;
+    int sample_rate = 0;
     int channels = 0;
+    int bitrate = 0;
     int64_t next_pts_samples = 0;
     bool flushed = false;
     std::vector<uint8_t> extradata;
@@ -132,7 +134,9 @@ bool AacEncoder::Initialize(int sample_rate, int channels, int bitrate) {
         return false;
     }
     impl_ = new Impl();
+    impl_->sample_rate = sample_rate;
     impl_->channels = channels;
+    impl_->bitrate = bitrate;
 
     const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
     if (!codec) {
@@ -278,6 +282,22 @@ void AacEncoder::Shutdown() {
 
 bool AacEncoder::is_initialized() const {
     return impl_ && impl_->codec;
+}
+
+int AacEncoder::sample_rate() const {
+    return impl_ && impl_->codec ? impl_->sample_rate : 0;
+}
+
+int AacEncoder::channels() const {
+    return impl_ && impl_->codec ? impl_->channels : 0;
+}
+
+int AacEncoder::bitrate() const {
+    return impl_ && impl_->codec ? impl_->bitrate : 0;
+}
+
+int AacEncoder::frame_size() const {
+    return impl_ && impl_->codec ? impl_->codec->frame_size : 0;
 }
 
 int AacEncoder::initial_padding_samples() const {
