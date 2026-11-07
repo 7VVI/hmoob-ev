@@ -356,6 +356,8 @@ git commit -m "build: add vcpkg FFmpeg dependencies"
 
 ## Task 3: 时间与有界队列（TDD）
 
+> 实际实现补充：`FrameQueue` 增加了 `waiter_count()`、析构契约断言、`[[nodiscard]]`、capacity 断言；测试增加了 Pop 超时、关闭后 drain、确定性 close-wake。`hmmob_core` 不链接 FFmpeg，FFmpeg 只由 `evspike` 链接。以实际提交为准。
+
 **Files:**
 - Create: `src/core/common/QpcClock.h/.cpp`, `src/core/common/FrameQueue.h`
 - Create: `tests/test_qpc_clock.cpp`, `tests/test_frame_queue.cpp`
@@ -442,12 +444,10 @@ add_library(hmmob_core STATIC
   src/core/common/QpcClock.cpp
 )
 target_include_directories(hmmob_core PUBLIC src)
-target_link_libraries(hmmob_core PUBLIC ${FFMPEG_LIBRARIES})
 
 add_executable(evspike src/spike/main.cpp)
-target_include_directories(evspike PRIVATE src)
 target_include_directories(evspike SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
-target_link_libraries(evspike PRIVATE hmmob_core)
+target_link_libraries(evspike PRIVATE hmmob_core ${FFMPEG_LIBRARIES})
 
 find_package(Catch2 3 REQUIRED)
 enable_testing()
