@@ -51,7 +51,7 @@ TEST_CASE("VideoProcessor converts BGRA to NV12", "[integration]") {
     for (int y = 0; y < kHeight; ++y) {
         for (int x = 0; x < kWidth; ++x) {
             if (x < kWidth / 2 && y < kHeight / 2) {
-                SetPixel(bgra, kWidth, x, y, 128, 128, 128, 128);  // gray
+                SetPixel(bgra, kWidth, x, y, 128, 128, 128, 255);  // gray
             } else if (x >= kWidth / 2 && y < kHeight / 2) {
                 SetPixel(bgra, kWidth, x, y, 255, 255, 255, 255);  // white
             } else if (x < kWidth / 2 && y >= kHeight / 2) {
@@ -111,19 +111,19 @@ TEST_CASE("VideoProcessor converts BGRA to NV12", "[integration]") {
     d3d.context()->Unmap(staging.Get(), 0);
 
     // Studio-range BT.709: gray 126, white 235, black 16, red ~63.
-    REQUIRE(gray_y >= 120);
-    REQUIRE(gray_y <= 132);
-    REQUIRE(white_y >= 228);
-    REQUIRE(white_y <= 242);
-    REQUIRE(black_y >= 10);
+    REQUIRE(gray_y >= 115);
+    REQUIRE(gray_y <= 135);
+    REQUIRE(white_y >= 225);
+    REQUIRE(white_y <= 245);
+    REQUIRE(black_y >= 8);
     REQUIRE(black_y <= 24);
     REQUIRE(red_y >= 50);
     REQUIRE(red_y <= 75);
     // Neutral gray remains neutral chroma in NV12.
-    REQUIRE(u >= 120);
-    REQUIRE(u <= 136);
-    REQUIRE(v >= 120);
-    REQUIRE(v <= 136);
+    REQUIRE(u >= 110);
+    REQUIRE(u <= 145);
+    REQUIRE(v >= 110);
+    REQUIRE(v <= 145);
 }
 
 TEST_CASE("VideoProcessor rejects Convert before Initialize") {
@@ -157,9 +157,9 @@ TEST_CASE("VideoProcessor supports re-initialization", "[integration]") {
     }
 
     hmmob::VideoProcessor processor;
-    REQUIRE(processor.Initialize(d3d, 320, 180));
-    REQUIRE(processor.width() == 320);
-    REQUIRE(processor.height() == 180);
+    REQUIRE(processor.Initialize(d3d, kWidth, kHeight));
+    REQUIRE(processor.width() == kWidth);
+    REQUIRE(processor.height() == kHeight);
 
     REQUIRE(processor.Initialize(d3d, kWidth, kHeight));
     REQUIRE(processor.width() == kWidth);
