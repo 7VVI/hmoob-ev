@@ -957,13 +957,19 @@ bool DxgiCapture::CreateDuplication() {
     output1_.Reset();
     copy_texture_.Reset();
 
-    ComPtr<IDXGIDevice> dxgi_device;
-    HMMOB_HR_CHECK(d3d_->device()->QueryInterface(IID_PPV_ARGS(&dxgi_device)));
-    ComPtr<IDXGIAdapter> adapter;
-    HMMOB_HR_CHECK(dxgi_device->GetAdapter(&adapter));
-
+    const auto displays = d3d_->EnumerateDisplays();
+    if (display_index_ < 0 || display_index_ >= static_cast<int>(displays.size())) {
+        return false;
+    }
+    const auto& display = displays[display_index_];
+    // Phase 0: the D3D11 device must be on the display's adapter;
+    // display 0 is on the default adapter.
+    ComPtr<IDXGIAdapter1> adapter;
+    HMMOB_HR_CHECK(d3d_->factory()->EnumAdapters1(
+        static_cast<UINT>(display.adapter_index), &adapter));
     ComPtr<IDXGIOutput> output;
-    HMMOB_HR_CHECK(adapter->EnumOutputs(static_cast<UINT>(display_index_), &output));
+    HMMOB_HR_CHECK(adapter->EnumOutputs(
+        static_cast<UINT>(display.output_index), &output));
     HMMOB_HR_CHECK(output.As(&output1_));
 
     DXGI_OUTPUT_DESC desc{};
