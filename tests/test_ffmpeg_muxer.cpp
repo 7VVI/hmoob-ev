@@ -1,6 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <d3d11.h>
+#include <process.h>
 #include <wrl/client.h>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -10,6 +13,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/macros.h>
 #include <libavutil/pixfmt.h>
 }
 
@@ -18,6 +22,8 @@ extern "C" {
 #include "core/mux/FfmpegMuxer.h"
 
 namespace {
+
+using Bytes = std::vector<uint8_t>;
 
 constexpr int kWidth = 640;
 constexpr int kHeight = 360;
@@ -35,6 +41,27 @@ struct TempFile {
         std::filesystem::remove(path, error);
     }
 };
+
+// A per-run name so concurrent test processes cannot collide.
+std::filesystem::path UniqueTempPath(const std::string& tag) {
+    static std::atomic<int> counter{0};
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    return std::filesystem::temp_directory_path() /
+           ("hmmob-muxer-" + tag + "-" + std::to_string(::_getpid()) + "-" +
+            std::to_string(stamp) + "-" + std::to_string(counter.fetch_add(1)) +
+            ".mp4");
+}
+
+// A syntactically valid Annex B H.264 keyframe: SPS, PPS and an IDR slice.
+Bytes SyntheticH264Keyframe() {
+    return {0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1E,
+            0x00, 0x00, 0x00, 0x01, 0x68, 0xCE, 0x3C, 0x80,
+            0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84};
+}
+
+Bytes SyntheticH264InterFrame() {
+    return {0x00, 0x00, 0x00, 0x01, 0x41, 0x9A, 0x02, 0x03};
+}
 
 struct MuxRun {
     int packets_written = 0;
@@ -69,12 +96,7 @@ MuxRun RunMuxAndDemux(const std::string& codec, AVCodecID expected_codec_id) {
     Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
     REQUIRE(SUCCEEDED(d3d.device()->CreateTexture2D(&desc, nullptr, &texture)));
 
-    TempFile output{std::filesystem::temp_directory_path() /
-                    ("hmmob-muxer-test-" + codec + ".mp4")};
-    {
-        std::error_code error;
-        std::filesystem::remove(output.path, error);
-    }
+    TempFile output{UniqueTempPath(codec)};
     const std::string path = output.path.string();
 
     hmmob::FfmpegMuxer muxer;
@@ -118,6 +140,23 @@ MuxRun RunMuxAndDemux(const std::string& codec, AVCodecID expected_codec_id) {
     CHECK(stream->codecpar->width == kWidth);
     CHECK(stream->codecpar->height == kHeight);
     CHECK(stream->codecpar->extradata_size > 0);
+    const uint32_t expected_tag = expected_codec_id == AV_CODEC_ID_HEVC
+                                      ? MKTAG('h', 'v', 'c', '1')
+                                      : MKTAG('a', 'v', 'c', '1');
+    CHECK(stream->codecpar->codec_tag == expected_tag);
+
+    if (expected_codec_id == AV_CODEC_ID_H264) {
+        // AMF's H.264 encoder is configured for High profile, so the avcC
+        // record must end with the High-profile extension.
+        REQUIRE(stream->codecpar->extradata_size > 4);
+        const int size = stream->codecpar->extradata_size;
+        const uint8_t* extradata = stream->codecpar->extradata;
+        CHECK(extradata[1] == 100);  // profile_idc High
+        CHECK(extradata[size - 4] == 0xFD);  // chroma_format_idc = 1
+        CHECK(extradata[size - 3] == 0xF8);  // bit_depth_luma_minus8 = 0
+        CHECK(extradata[size - 2] == 0xF8);  // bit_depth_chroma_minus8 = 0
+        CHECK(extradata[size - 1] == 0x00);  // numOfSequenceParameterSetExt
+    }
 
     const AVCodec* decoder = avcodec_find_decoder(expected_codec_id);
     REQUIRE(decoder != nullptr);
@@ -188,4 +227,61 @@ TEST_CASE("FFmpeg muxer writes a decodable HEVC MP4", "[integration][amf]") {
 
 TEST_CASE("FFmpeg muxer writes a decodable H.264 MP4", "[integration][amf]") {
     CheckRun(RunMuxAndDemux("h264", AV_CODEC_ID_H264));
+}
+
+TEST_CASE("FfmpegMuxer rejects invalid Open arguments", "[mux]") {
+    TempFile output{UniqueTempPath("invalid")};
+    const std::string path = output.path.string();
+    hmmob::FfmpegMuxer muxer;
+
+    CHECK_FALSE(muxer.Open("", "h264", kWidth, kHeight, kFps, kBitrate));
+    CHECK_FALSE(muxer.Open(path, "vp9", kWidth, kHeight, kFps, kBitrate));
+    CHECK_FALSE(muxer.Open(path, "h264", 0, kHeight, kFps, kBitrate));
+    CHECK_FALSE(muxer.Open(path, "h264", kWidth, 0, kFps, kBitrate));
+    CHECK_FALSE(muxer.Open(path, "h264", kWidth, kHeight, 0, kBitrate));
+    CHECK_FALSE(muxer.Open(path, "h264", kWidth, kHeight, kFps, 0));
+
+    // Rejected arguments must not create the output file.
+    CHECK_FALSE(std::filesystem::exists(output.path));
+    CHECK(muxer.Close());  // Never opened: nothing to report.
+}
+
+TEST_CASE("FfmpegMuxer Close before any packet reports failure", "[mux]") {
+    TempFile output{UniqueTempPath("empty")};
+    hmmob::FfmpegMuxer muxer;
+    REQUIRE(muxer.Open(output.path.string(), "h264", kWidth, kHeight, kFps, kBitrate));
+
+    CHECK_FALSE(muxer.Close());
+    // The documented behaviour is to leave the empty file behind.
+    CHECK(std::filesystem::exists(output.path));
+    CHECK(std::filesystem::file_size(output.path) == 0);
+    CHECK(muxer.Close());  // Idempotent.
+}
+
+TEST_CASE("FfmpegMuxer latches write failures", "[mux]") {
+    TempFile output{UniqueTempPath("latch")};
+    hmmob::FfmpegMuxer muxer;
+    REQUIRE(muxer.Open(output.path.string(), "h264", kWidth, kHeight, kFps, kBitrate));
+
+    const Bytes no_nal = {0xDE, 0xAD, 0xBE, 0xEF};
+    CHECK_FALSE(muxer.WritePacket(no_nal.data(), no_nal.size(), 0, true));
+
+    // Even a valid packet is rejected once the session has failed.
+    const Bytes keyframe = SyntheticH264Keyframe();
+    CHECK_FALSE(muxer.WritePacket(keyframe.data(), keyframe.size(), 0, true));
+    CHECK_FALSE(muxer.Close());
+}
+
+TEST_CASE("FfmpegMuxer writes synthetic access units", "[mux]") {
+    TempFile output{UniqueTempPath("synthetic")};
+    hmmob::FfmpegMuxer muxer;
+    REQUIRE(muxer.Open(output.path.string(), "h264", kWidth, kHeight, kFps, kBitrate));
+
+    const Bytes keyframe = SyntheticH264Keyframe();
+    REQUIRE(muxer.WritePacket(keyframe.data(), keyframe.size(), 0, true));
+    const Bytes inter = SyntheticH264InterFrame();
+    REQUIRE(muxer.WritePacket(inter.data(), inter.size(), 33333, false));
+    REQUIRE(muxer.Close());
+    CHECK(muxer.Close());  // Idempotent after a successful session.
+    CHECK(std::filesystem::file_size(output.path) > 0);
 }

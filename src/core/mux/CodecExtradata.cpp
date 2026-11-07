@@ -60,6 +60,19 @@ void AppendBigEndian(std::vector<uint8_t>& out, uint64_t value, int bytes) {
     }
 }
 
+bool HasHighProfileExtension(uint8_t profile_idc) {
+    switch (profile_idc) {
+        case 100:  // High
+        case 110:  // High 10
+        case 122:  // High 4:2:2
+        case 144:  // High 4:4:4 (old)
+        case 244:  // High 4:4:4 Predictive
+            return true;
+        default:
+            return false;
+    }
+}
+
 void AppendNal(std::vector<uint8_t>& out, const detail::NalUnit& nal) {
     out.push_back(static_cast<uint8_t>(nal.size >> 8));
     out.push_back(static_cast<uint8_t>(nal.size & 0xFF));
@@ -84,6 +97,13 @@ std::vector<uint8_t> BuildAvcExtradata(const detail::NalUnit& sps,
     AppendNal(out, sps);
     out.push_back(0x01);   // numOfPictureParameterSets
     AppendNal(out, pps);
+    if (HasHighProfileExtension(sps.data[1])) {
+        // The High-profile extension is required for profile_idc 100 and up.
+        out.push_back(0xFD);  // reserved + chroma_format_idc = 1 (4:2:0)
+        out.push_back(0xF8);  // reserved + bit_depth_luma_minus8 = 0
+        out.push_back(0xF8);  // reserved + bit_depth_chroma_minus8 = 0
+        out.push_back(0x00);  // numOfSequenceParameterSetExt
+    }
     return out;
 }
 
@@ -101,7 +121,7 @@ std::vector<uint8_t> BuildHevcExtradata(const detail::NalUnit& vps,
 
     reader.Read(4);  // sps_video_parameter_set_id
     const uint64_t max_sub_layers_minus1 = reader.Read(3);
-    reader.Read(1);  // sps_temporal_id_nesting_flag
+    const uint64_t temporal_id_nesting = reader.Read(1);
     const uint64_t profile_space = reader.Read(2);
     const uint64_t tier_flag = reader.Read(1);
     const uint64_t profile_idc = reader.Read(5);
@@ -109,7 +129,10 @@ std::vector<uint8_t> BuildHevcExtradata(const detail::NalUnit& vps,
     const uint64_t constraint_flags = reader.Read(48);
     const uint64_t level_idc = reader.Read(8);
 
-    if (!reader.ok() || max_sub_layers_minus1 > 6) {
+    // The record below hardcodes 8-bit 4:2:0 and therefore only describes
+    // HEVC Main profile; refusing other profiles is safer than emitting hvcC
+    // values that contradict the SPS.
+    if (!reader.ok() || max_sub_layers_minus1 > 6 || profile_idc != 1) {
         return {};
     }
 
@@ -129,10 +152,11 @@ std::vector<uint8_t> BuildHevcExtradata(const detail::NalUnit& vps,
     out.push_back(0xF8);  // reserved + bitDepthChromaMinus8 = 0
     out.push_back(0x00);  // avgFrameRate
     out.push_back(0x00);
-    // constantFrameRate = 0, numTemporalLayers, temporalIdNested = 1,
+    // constantFrameRate = 0, numTemporalLayers, temporalIdNested from the SPS,
     // lengthSizeMinusOne = 3 (4-byte NAL lengths).
     out.push_back(static_cast<uint8_t>(
-        (((max_sub_layers_minus1 + 1) & 0x07) << 3) | (1 << 2) | 3));
+        (((max_sub_layers_minus1 + 1) & 0x07) << 3) |
+        ((temporal_id_nesting & 0x01) << 2) | 3));
     out.push_back(3);  // numOfArrays
 
     const detail::NalUnit* arrays[] = {&vps, &sps, &pps};

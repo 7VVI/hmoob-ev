@@ -16,8 +16,9 @@ namespace hmmob {
 //  - WritePacket returns false when the packet was not written. Once a write
 //    fails the muxer stays failed: later calls return false until Close.
 //  - Close returns false if no header was ever written (nothing was muxed)
-//    or if a write failed. It still releases all resources and is idempotent;
-//    a default-constructed or already-closed muxer returns true.
+//    or if a write failed. The file created by Open is left in place (empty
+//    when nothing was muxed). Close still releases all resources and is
+//    idempotent; a default-constructed or already-closed muxer returns true.
 class FfmpegMuxer {
 public:
     FfmpegMuxer() = default;

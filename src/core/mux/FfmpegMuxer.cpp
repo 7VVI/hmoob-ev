@@ -4,6 +4,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/error.h>
+#include <libavutil/macros.h>
 #include <libavutil/mem.h>
 }
 
@@ -43,8 +44,6 @@ bool SetExtradata(AVCodecParameters* parameters,
     }
     std::memcpy(parameters->extradata, extradata.data(), extradata.size());
     parameters->extradata_size = static_cast<int>(extradata.size());
-    // Let the muxer derive the codec tag from the codec id.
-    parameters->codec_tag = 0;
     return true;
 }
 
@@ -92,6 +91,10 @@ bool FfmpegMuxer::Open(const std::string& path, const std::string& codec,
     AVCodecParameters* parameters = impl_->stream->codecpar;
     parameters->codec_type = AVMEDIA_TYPE_VIDEO;
     parameters->codec_id = CodecIdFor(codec);
+    // avc1/hvc1 declare that parameter sets live in the extradata; the muxer
+    // strips them from the samples to match.
+    parameters->codec_tag = codec == "hevc" ? MKTAG('h', 'v', 'c', '1')
+                                            : MKTAG('a', 'v', 'c', '1');
     parameters->width = width;
     parameters->height = height;
     parameters->format = AV_PIX_FMT_YUV420P;

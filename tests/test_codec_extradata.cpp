@@ -1,7 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
+#include "core/mux/AnnexBInternal.h"
 #include "core/mux/CodecExtradata.h"
 
 namespace {
@@ -51,6 +53,25 @@ std::vector<HvcArray> ParseHvcArrays(const Bytes& extradata) {
     }
     REQUIRE(pos == extradata.size());
     return arrays;
+}
+
+// Splits the 4-byte length-prefixed output of AnnexBToLengthPrefixed.
+std::vector<Bytes> ParseLengthPrefixed(const Bytes& data) {
+    std::vector<Bytes> nals;
+    size_t pos = 0;
+    while (pos < data.size()) {
+        REQUIRE(pos + 4 <= data.size());
+        const size_t size = (static_cast<size_t>(data[pos]) << 24) |
+                            (static_cast<size_t>(data[pos + 1]) << 16) |
+                            (static_cast<size_t>(data[pos + 2]) << 8) |
+                            static_cast<size_t>(data[pos + 3]);
+        pos += 4;
+        REQUIRE(pos + size <= data.size());
+        nals.emplace_back(data.begin() + static_cast<std::ptrdiff_t>(pos),
+                          data.begin() + static_cast<std::ptrdiff_t>(pos + size));
+        pos += size;
+    }
+    return nals;
 }
 
 // The first 13 RBSP bytes encode the profile/level fields parsed by the hvcC
@@ -210,4 +231,124 @@ TEST_CASE("BuildCodecExtradata tolerates a truncated HEVC SPS", "[mux]") {
     });
 
     CHECK(hmmob::BuildCodecExtradata("hevc", packet.data(), packet.size()).empty());
+}
+
+TEST_CASE("BuildCodecExtradata adds the High-profile avcC extension", "[mux]") {
+    const Bytes sps = {0x67, 0x64, 0x00, 0x28};  // profile_idc 100, level 40
+    const Bytes pps = {0x68, 0xEE, 0x3C, 0x80};
+    const Bytes packet = BuildAnnexB({sps, pps, {0x65, 0x88, 0x84}});
+
+    const Bytes extradata =
+        hmmob::BuildCodecExtradata("h264", packet.data(), packet.size());
+
+    REQUIRE(extradata.size() == 11 + sps.size() + pps.size() + 4);
+    CHECK(extradata[1] == 100);    // AVCProfileIndication
+    CHECK(extradata[19] == 0xFD);  // reserved + chroma_format_idc = 1 (4:2:0)
+    CHECK(extradata[20] == 0xF8);  // reserved + bit_depth_luma_minus8 = 0
+    CHECK(extradata[21] == 0xF8);  // reserved + bit_depth_chroma_minus8 = 0
+    CHECK(extradata[22] == 0x00);  // numOfSequenceParameterSetExt
+}
+
+TEST_CASE("BuildCodecExtradata rejects non-Main HEVC profiles", "[mux]") {
+    Bytes sps = MakeSyntheticHevcSps();
+    sps[3] = 0x02;  // general_profile_idc = 2 (Main 10) is not supported
+    const Bytes packet = BuildAnnexB({
+        {0x40, 0x01, 0x0C},
+        sps,
+        {0x44, 0x01, 0xC0},
+    });
+
+    CHECK(hmmob::BuildCodecExtradata("hevc", packet.data(), packet.size()).empty());
+}
+
+TEST_CASE("BuildCodecExtradata copies the SPS temporal nesting flag", "[mux]") {
+    Bytes sps = MakeSyntheticHevcSps();
+    sps[2] = 0x00;  // sps_temporal_id_nesting_flag = 0
+    const Bytes packet = BuildAnnexB({
+        {0x40, 0x01, 0x0C},
+        sps,
+        {0x44, 0x01, 0xC0},
+    });
+
+    const Bytes extradata =
+        hmmob::BuildCodecExtradata("hevc", packet.data(), packet.size());
+    REQUIRE(extradata.size() > 21);
+    // One temporal layer, temporalIdNested = 0, 4-byte NAL lengths.
+    CHECK(extradata[21] == 0x0B);
+}
+
+TEST_CASE("AnnexBToLengthPrefixed writes four-byte big-endian lengths", "[mux]") {
+    // Mixed start codes: 3-byte for the first NAL, 4-byte for the second.
+    Bytes packet = {0x00, 0x00, 0x01, 0x65, 0x88, 0x84};
+    packet.insert(packet.end(),
+                  {0x00, 0x00, 0x00, 0x01, 0x41, 0x9A, 0x02, 0x03});
+
+    const Bytes output =
+        hmmob::detail::AnnexBToLengthPrefixed(packet.data(), packet.size(), false);
+
+    REQUIRE(output.size() == 4 + 3 + 4 + 4);
+    CHECK(output[0] == 0x00);
+    CHECK(output[1] == 0x00);
+    CHECK(output[2] == 0x00);
+    CHECK(output[3] == 0x03);
+    CHECK(output[7] == 0x00);
+    CHECK(output[8] == 0x00);
+    CHECK(output[9] == 0x00);
+    CHECK(output[10] == 0x04);
+
+    const Bytes first = {0x65, 0x88, 0x84};
+    const Bytes second = {0x41, 0x9A, 0x02, 0x03};
+    const std::vector<Bytes> nals = ParseLengthPrefixed(output);
+    REQUIRE(nals.size() == 2);
+    CHECK(nals[0] == first);
+    CHECK(nals[1] == second);
+}
+
+TEST_CASE("AnnexBToLengthPrefixed drops parameter sets when a VCL NAL is present",
+          "[mux]") {
+    const Bytes sps = {0x67, 0x42, 0x00, 0x1E};
+    const Bytes pps = {0x68, 0xCE, 0x3C, 0x80};
+    const Bytes idr = {0x65, 0x88, 0x84};
+    const Bytes packet = BuildAnnexB({sps, pps, idr});
+
+    const std::vector<Bytes> nals = ParseLengthPrefixed(
+        hmmob::detail::AnnexBToLengthPrefixed(packet.data(), packet.size(), false));
+
+    REQUIRE(nals.size() == 1);
+    CHECK(nals[0] == idr);
+}
+
+TEST_CASE("AnnexBToLengthPrefixed keeps parameter sets when no VCL NAL is present",
+          "[mux]") {
+    const Bytes sps = {0x67, 0x42, 0x00, 0x1E};
+    const Bytes pps = {0x68, 0xCE, 0x3C, 0x80};
+    const Bytes packet = BuildAnnexB({sps, pps});
+
+    const std::vector<Bytes> nals = ParseLengthPrefixed(
+        hmmob::detail::AnnexBToLengthPrefixed(packet.data(), packet.size(), false));
+
+    REQUIRE(nals.size() == 2);
+    CHECK(nals[0] == sps);
+    CHECK(nals[1] == pps);
+}
+
+TEST_CASE("AnnexBToLengthPrefixed trims trailing zero padding", "[mux]") {
+    // Zeros before the next start code belong to that start code's prefix.
+    const Bytes packet = {0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x00, 0x00,
+                          0x00, 0x00, 0x00, 0x01, 0x41, 0x9A};
+    const Bytes first = {0x65, 0x88, 0x84};
+    const Bytes second = {0x41, 0x9A};
+
+    std::vector<Bytes> nals = ParseLengthPrefixed(
+        hmmob::detail::AnnexBToLengthPrefixed(packet.data(), packet.size(), false));
+    REQUIRE(nals.size() == 2);
+    CHECK(nals[0] == first);
+    CHECK(nals[1] == second);
+
+    // Zeros at the end of the buffer are padding too.
+    const Bytes tail = {0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x00, 0x00};
+    nals = ParseLengthPrefixed(
+        hmmob::detail::AnnexBToLengthPrefixed(tail.data(), tail.size(), false));
+    REQUIRE(nals.size() == 1);
+    CHECK(nals[0] == first);
 }
