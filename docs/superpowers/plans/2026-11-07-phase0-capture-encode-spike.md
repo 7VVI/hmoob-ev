@@ -6,7 +6,7 @@
 
 **Architecture:** 一个不依赖 Qt 的命令行 spike（`evspike`）+ 可复用的 `hmmob_core` 静态库。采集、颜色转换、编码、封装各自独立模块，通过简单接口连接，为 Phase 1 的产品化内核打基础。
 
-**Tech Stack:** C++20、MSVC 2022、CMake、vcpkg、FFmpeg 7 LGPL、D3D11、DXGI Desktop Duplication、AMD AMF SDK、Catch2。
+**Tech Stack:** C++20、MSVC 2022、CMake、vcpkg、FFmpeg 9.x LGPL（vcpkg 当前基线）、D3D11、DXGI Desktop Duplication、AMD AMF SDK、Catch2。
 
 ---
 
@@ -308,7 +308,7 @@ target_link_libraries(evspike PRIVATE
   FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil
   FFmpeg::swscale FFmpeg::swresample)
 
-# Phase 0: run evspike with C:\vcpkg\installed\x64-windows\bin on PATH.
+# Phase 0: vcpkg applocal copies FFmpeg DLLs next to evspike.exe.
 # A proper DLL deployment step lands in Phase 1.
 ```
 
@@ -335,7 +335,9 @@ int main() {
 $cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
 & $cmake --preset windows-x64-release
 & $cmake --build --preset windows-x64-release
-$env:PATH = "C:\vcpkg\installed\x64-windows\bin;$env:PATH"
+# vcpkg applocal normally copies FFmpeg DLLs next to evspike.exe.
+# If the run fails with missing DLLs, prepend the actual vcpkg bin dir:
+# $env:PATH = "<project>\build\release\vcpkg_installed\x64-windows\bin;$env:PATH"
 .\build\release\Release\evspike.exe
 ```
 
