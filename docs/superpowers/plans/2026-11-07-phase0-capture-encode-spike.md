@@ -425,11 +425,11 @@ add_library(hmmob_core STATIC
   src/core/common/QpcClock.cpp
 )
 target_include_directories(hmmob_core PUBLIC src)
-target_link_libraries(hmmob_core PUBLIC
-  FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil
-  FFmpeg::swscale FFmpeg::swresample)
+target_link_libraries(hmmob_core PUBLIC ${FFMPEG_LIBRARIES})
 
 add_executable(evspike src/spike/main.cpp)
+target_include_directories(evspike PRIVATE src)
+target_include_directories(evspike SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
 target_link_libraries(evspike PRIVATE hmmob_core)
 
 find_package(Catch2 3 REQUIRED)
