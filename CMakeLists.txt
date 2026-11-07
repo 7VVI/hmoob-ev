@@ -16,5 +16,4 @@ add_executable(evspike src/spike/main.cpp)
 target_include_directories(evspike PRIVATE src ${FFMPEG_INCLUDE_DIRS})
 target_link_libraries(evspike PRIVATE ${FFMPEG_LIBRARIES})
 
-# Phase 0: run evspike with the vcpkg bin directory on PATH.
-# A proper DLL deployment step lands in Phase 1.
+# vcpkg applocal deploys FFmpeg DLLs next to evspike.exe. Install-time deployment lands in Phase 1.
