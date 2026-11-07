@@ -12,9 +12,25 @@ endif()
 
 find_package(FFMPEG REQUIRED)
 
+add_library(hmmob_core STATIC
+  src/core/common/QpcClock.cpp
+)
+target_include_directories(hmmob_core PUBLIC src)
+target_link_libraries(hmmob_core PUBLIC ${FFMPEG_LIBRARIES})
+
 add_executable(evspike src/spike/main.cpp)
 target_include_directories(evspike PRIVATE src)
 target_include_directories(evspike SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
-target_link_libraries(evspike PRIVATE ${FFMPEG_LIBRARIES})
+target_link_libraries(evspike PRIVATE hmmob_core)
+
+find_package(Catch2 3 REQUIRED)
+enable_testing()
+add_executable(hmmob_tests
+  tests/test_qpc_clock.cpp
+  tests/test_frame_queue.cpp
+)
+target_link_libraries(hmmob_tests PRIVATE hmmob_core Catch2::Catch2WithMain)
+include(Catch)
+catch_discover_tests(hmmob_tests)
 
 # vcpkg applocal deploys FFmpeg DLLs next to evspike.exe. Install-time deployment lands in Phase 1.
