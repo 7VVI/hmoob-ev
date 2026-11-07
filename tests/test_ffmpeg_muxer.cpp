@@ -378,7 +378,7 @@ TEST_CASE("FFmpeg muxer writes HEVC+AAC MP4", "[integration][amf]") {
     CHECK(audio_stream->codecpar->codec_id == AV_CODEC_ID_AAC);
     CHECK(audio_stream->codecpar->sample_rate == kAudioSampleRate);
     CHECK(audio_stream->codecpar->ch_layout.nb_channels == kAudioChannels);
-    CHECK(audio_stream->codecpar->frame_size == kAudioFrameSize);
+    CHECK(audio_stream->codecpar->frame_size == aac.frame_size());
     CHECK(audio_stream->codecpar->initial_padding == expected_initial_padding);
     CHECK(audio_stream->codecpar->extradata_size == expected_extradata_size);
 
@@ -436,7 +436,7 @@ TEST_CASE("FFmpeg muxer writes HEVC+AAC MP4", "[integration][amf]") {
     CHECK(video_packets_written >= kAvFrameCount);
     CHECK(audio_packets_written > 0);
     CHECK(audio_frames_decoded >= 1);
-    CHECK(first_audio_pts == -kAudioFrameSize);
+    CHECK(first_audio_pts == -expected_initial_padding);
     CHECK(audio_durations.size() ==
           static_cast<size_t>(audio_packets_written));
     // ~94 packets for 2 s at 1024 samples each; the final one may be shorter.
@@ -471,7 +471,7 @@ TEST_CASE("FFmpeg muxer writes HEVC+AAC MP4", "[integration][amf]") {
                     << " video start_time=" << video_stream->start_time
                     << " last audio duration="
                     << (audio_durations.empty() ? -1 : audio_durations.back()));
-    CHECK(std::abs(video_seconds - audio_seconds) < 0.005);
+    CHECK(std::abs(video_seconds - audio_seconds) < 0.002);
 
     av_frame_free(&frame);
     av_packet_free(&packet);
@@ -694,6 +694,8 @@ TEST_CASE("FfmpegMuxer rejects enabled audio without extradata", "[mux]") {
     CHECK_FALSE(muxer.Open(path, "h264", kWidth, kHeight, kFps, kBitrate, audio));
     audio.sample_rate = 48000;
     audio.channels = 0;
+    CHECK_FALSE(muxer.Open(path, "h264", kWidth, kHeight, kFps, kBitrate, audio));
+    audio.channels = 9;  // AAC channel layouts only cover 1..8 here.
     CHECK_FALSE(muxer.Open(path, "h264", kWidth, kHeight, kFps, kBitrate, audio));
     audio.channels = 2;
     audio.bitrate = 0;

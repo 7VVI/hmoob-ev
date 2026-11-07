@@ -87,8 +87,8 @@ bool FfmpegMuxer::Open(const std::string& path, const std::string& codec,
         return false;
     }
     if (audio.enabled &&
-        (audio.sample_rate <= 0 || audio.channels <= 0 || audio.bitrate <= 0 ||
-         audio.frame_size <= 0)) {
+        (audio.sample_rate <= 0 || audio.channels <= 0 || audio.channels > 8 ||
+         audio.bitrate <= 0 || audio.frame_size <= 0)) {
         std::fprintf(stderr, "FfmpegMuxer: invalid audio configuration\n");
         return false;
     }
