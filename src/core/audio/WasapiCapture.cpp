@@ -452,6 +452,10 @@ void WasapiCapture::Stop() {
     if (!impl_) {
         return;
     }
+    // A client that was never started (Initialize failed, or Start failed
+    // before IAudioClient::Start succeeded) returns AUDCLNT_E_NOT_STARTED,
+    // which would only add noise after the real diagnostic.
+    const bool started = running_;
     running_ = false;
     impl_->running.store(false, std::memory_order_relaxed);
     if (impl_->event) {
@@ -460,9 +464,8 @@ void WasapiCapture::Stop() {
     if (impl_->thread.joinable()) {
         impl_->thread.join();
     }
-    if (impl_->client) {
-        // Stop() is a no-op on a stream that was never started, but a failure
-        // here can still indicate a torn-down endpoint worth reporting.
+    if (impl_->client && started) {
+        // A failure here can indicate a torn-down endpoint worth reporting.
         const HRESULT hr = impl_->client->Stop();
         if (FAILED(hr)) {
             LogHr("IAudioClient::Stop", hr);
