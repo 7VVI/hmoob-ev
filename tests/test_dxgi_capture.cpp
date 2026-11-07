@@ -24,6 +24,9 @@ TEST_CASE("DXGI capture reports failure for an invalid display index", "[integra
     REQUIRE(capture.last_error() != S_OK);
 }
 
+// Requires an active, presenting display. On headless or CI hosts, exclude
+// integration tests (for example with `ctest -LE integration`). Locked or
+// non-presenting desktops are skipped, but capture errors remain hard failures.
 TEST_CASE("DXGI capture acquires frames from the primary display", "[integration]") {
     // Desktop Duplication produces no frames when the session's input desktop
     // is locked (for example, after an overnight lock screen).
@@ -70,6 +73,12 @@ TEST_CASE("DXGI capture acquires frames from the primary display", "[integration
             REQUIRE(frame.height > 0);
             ++frames;
         }
+    }
+    if (frames == 0) {
+        if (capture.failed() || capture.access_lost()) {
+            FAIL("capture failed before producing a frame");
+        }
+        SKIP("desktop produced no updates; display may be off or not presenting");
     }
     REQUIRE(frames > 0);
 }
