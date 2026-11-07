@@ -819,6 +819,8 @@ git commit -m "feat: add d3d11 device and display enumeration"
 
 ## Task 5: DXGI Desktop Duplication 采集
 
+> 实际实现补充：增加 `ResetState()`/`CreateDuplicationImpl()` 清理半初始化状态；仅光标更新的帧不执行 `CopyResource`，复用上一张桌面纹理；PTS 优先使用 `LastPresentTime`（`QpcClock::TicksToUs`）；采集纹理格式/尺寸不一致时重置 duplication；测试用 RAII 恢复光标。以实际提交为准。
+
 **Files:**
 - Create: `src/core/capture/DxgiCapture.h/.cpp`, `tests/test_dxgi_capture.cpp`
 - Modify: `CMakeLists.txt`
