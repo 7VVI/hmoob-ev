@@ -116,8 +116,12 @@ bool FfmpegMuxer::Open(const std::string& path, const std::string& codec,
 
 bool FfmpegMuxer::WritePacket(const uint8_t* data, size_t size,
                               int64_t pts_us, bool keyframe) {
-    if (!impl_ || !impl_->format || !impl_->stream || !data || size == 0 ||
-        impl_->write_failed) {
+    if (!impl_ || !impl_->format || !impl_->stream || impl_->write_failed) {
+        return false;
+    }
+    if (!data || size == 0) {
+        std::fprintf(stderr, "FfmpegMuxer: WritePacket called without data\n");
+        impl_->write_failed = true;
         return false;
     }
 
@@ -128,6 +132,7 @@ bool FfmpegMuxer::WritePacket(const uint8_t* data, size_t size,
             std::fprintf(stderr,
                          "FfmpegMuxer: first %s packet is missing SPS/PPS/VPS\n",
                          impl_->codec.c_str());
+            impl_->write_failed = true;
             return false;
         }
         if (!SetExtradata(impl_->stream->codecpar, extradata)) {
@@ -152,15 +157,18 @@ bool FfmpegMuxer::WritePacket(const uint8_t* data, size_t size,
         detail::AnnexBToLengthPrefixed(data, size, hevc);
     if (payload.empty()) {
         std::fprintf(stderr, "FfmpegMuxer: packet contains no NAL units\n");
+        impl_->write_failed = true;
         return false;
     }
 
     AVPacket* packet = av_packet_alloc();
     if (!packet) {
+        impl_->write_failed = true;
         return false;
     }
     if (av_new_packet(packet, static_cast<int>(payload.size())) < 0) {
         av_packet_free(&packet);
+        impl_->write_failed = true;
         return false;
     }
     std::memcpy(packet->data, payload.data(), payload.size());
@@ -185,7 +193,12 @@ bool FfmpegMuxer::Close() {
         return true;
     }
 
-    bool ok = true;
+    // A session that never wrote a header produced no MP4, and a latched write
+    // failure means the output is incomplete; both are Close failures.
+    bool ok = impl_->header_written && !impl_->write_failed;
+    if (!impl_->header_written && impl_->format && impl_->format->pb) {
+        std::fprintf(stderr, "FfmpegMuxer: closing without a written header\n");
+    }
     if (impl_->format) {
         if (impl_->header_written) {
             const int result = av_write_trailer(impl_->format);

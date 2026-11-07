@@ -36,17 +36,24 @@ struct TempFile {
     }
 };
 
-}  // namespace
+struct MuxRun {
+    int packets_written = 0;
+    int keyframes = 0;
+    int packets_demuxed = 0;
+    int frames_decoded = 0;
+};
 
-TEST_CASE("FFmpeg muxer writes a decodable HEVC MP4", "[integration][amf]") {
+// Encodes kFrameCount frames with AMF, muxes them, then demuxes and decodes
+// the resulting file, asserting the full chain along the way.
+MuxRun RunMuxAndDemux(const std::string& codec, AVCodecID expected_codec_id) {
     hmmob::D3D11Device d3d;
     if (!d3d.Create()) {
         SKIP("D3D11 device unavailable");
     }
 
     hmmob::AmfEncoder encoder;
-    if (!encoder.Initialize(d3d.device(), "hevc", kWidth, kHeight, kFps, kBitrate)) {
-        SKIP("AMF HEVC encoder unavailable");
+    if (!encoder.Initialize(d3d.device(), codec, kWidth, kHeight, kFps, kBitrate)) {
+        SKIP("AMF " << codec << " encoder unavailable");
     }
 
     D3D11_TEXTURE2D_DESC desc{};
@@ -62,7 +69,8 @@ TEST_CASE("FFmpeg muxer writes a decodable HEVC MP4", "[integration][amf]") {
     Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
     REQUIRE(SUCCEEDED(d3d.device()->CreateTexture2D(&desc, nullptr, &texture)));
 
-    TempFile output{std::filesystem::temp_directory_path() / "hmmob-muxer-test.mp4"};
+    TempFile output{std::filesystem::temp_directory_path() /
+                    ("hmmob-muxer-test-" + codec + ".mp4")};
     {
         std::error_code error;
         std::filesystem::remove(output.path, error);
@@ -70,18 +78,17 @@ TEST_CASE("FFmpeg muxer writes a decodable HEVC MP4", "[integration][amf]") {
     const std::string path = output.path.string();
 
     hmmob::FfmpegMuxer muxer;
-    REQUIRE(muxer.Open(path, "hevc", kWidth, kHeight, kFps, kBitrate));
+    REQUIRE(muxer.Open(path, codec, kWidth, kHeight, kFps, kBitrate));
 
+    MuxRun run;
     std::vector<uint8_t> nv12(kWidth * kHeight * 3 / 2, 128);
-    int packets_written = 0;
-    int keyframes = 0;
     auto write_packet = [&](const hmmob::AmfPacket& packet) {
         REQUIRE(!packet.data.empty());
         REQUIRE(muxer.WritePacket(packet.data.data(), packet.data.size(),
                                   packet.pts_us, packet.keyframe));
-        ++packets_written;
+        ++run.packets_written;
         if (packet.keyframe) {
-            ++keyframes;
+            ++run.keyframes;
         }
     };
 
@@ -94,9 +101,6 @@ TEST_CASE("FFmpeg muxer writes a decodable HEVC MP4", "[integration][amf]") {
         REQUIRE(encoder.Encode(texture.Get(), i * kFrameUs, write_packet));
     }
     REQUIRE(encoder.Flush(write_packet));
-
-    CHECK(keyframes >= 1);
-    CHECK(packets_written >= kFrameCount);
     REQUIRE(muxer.Close());
 
     // Demux the file the muxer produced.
@@ -110,50 +114,78 @@ TEST_CASE("FFmpeg muxer writes a decodable HEVC MP4", "[integration][amf]") {
     REQUIRE(video_index >= 0);
 
     const AVStream* stream = format->streams[video_index];
-    CHECK(stream->codecpar->codec_id == AV_CODEC_ID_HEVC);
+    CHECK(stream->codecpar->codec_id == expected_codec_id);
     CHECK(stream->codecpar->width == kWidth);
     CHECK(stream->codecpar->height == kHeight);
     CHECK(stream->codecpar->extradata_size > 0);
 
-    const AVCodec* decoder = avcodec_find_decoder(AV_CODEC_ID_HEVC);
+    const AVCodec* decoder = avcodec_find_decoder(expected_codec_id);
     REQUIRE(decoder != nullptr);
-    AVCodecContext* codec = avcodec_alloc_context3(decoder);
-    REQUIRE(codec != nullptr);
-    REQUIRE(avcodec_parameters_to_context(codec, stream->codecpar) >= 0);
-    REQUIRE(avcodec_open2(codec, decoder, nullptr) >= 0);
+    AVCodecContext* decode_context = avcodec_alloc_context3(decoder);
+    REQUIRE(decode_context != nullptr);
+    REQUIRE(avcodec_parameters_to_context(decode_context, stream->codecpar) >= 0);
+    REQUIRE(avcodec_open2(decode_context, decoder, nullptr) >= 0);
 
     AVPacket* packet = av_packet_alloc();
     AVFrame* frame = av_frame_alloc();
     REQUIRE(packet != nullptr);
     REQUIRE(frame != nullptr);
 
-    int packets_demuxed = 0;
-    int frames_decoded = 0;
-    while (av_read_frame(format, packet) >= 0) {
+    int read_result = 0;
+    while ((read_result = av_read_frame(format, packet)) >= 0) {
         if (packet->stream_index != video_index) {
             av_packet_unref(packet);
             continue;
         }
-        ++packets_demuxed;
-        const int sent = avcodec_send_packet(codec, packet);
+        ++run.packets_demuxed;
+        const int sent = avcodec_send_packet(decode_context, packet);
         av_packet_unref(packet);
         REQUIRE(sent >= 0);
-        while (avcodec_receive_frame(codec, frame) >= 0) {
-            ++frames_decoded;
-            if (frames_decoded == 1) {
+
+        int receive = 0;
+        while ((receive = avcodec_receive_frame(decode_context, frame)) >= 0) {
+            ++run.frames_decoded;
+            if (run.frames_decoded == 1) {
                 CHECK(frame->width == kWidth);
                 CHECK(frame->height == kHeight);
                 CHECK(frame->format == AV_PIX_FMT_YUV420P);
             }
             av_frame_unref(frame);
         }
+        // Only "no frame ready" and "end of stream" are expected here.
+        REQUIRE((receive == AVERROR(EAGAIN) || receive == AVERROR_EOF));
     }
+    REQUIRE(read_result == AVERROR_EOF);
 
-    CHECK(packets_demuxed >= kFrameCount);
-    CHECK(frames_decoded >= 1);
+    // Flush the decoder and drain the frames it still holds.
+    REQUIRE(avcodec_send_packet(decode_context, nullptr) >= 0);
+    int drain = 0;
+    while ((drain = avcodec_receive_frame(decode_context, frame)) >= 0) {
+        ++run.frames_decoded;
+        av_frame_unref(frame);
+    }
+    REQUIRE((drain == AVERROR_EOF || drain == AVERROR(EAGAIN)));
 
     av_frame_free(&frame);
     av_packet_free(&packet);
-    avcodec_free_context(&codec);
+    avcodec_free_context(&decode_context);
     avformat_close_input(&format);
+    return run;
+}
+
+void CheckRun(const MuxRun& run) {
+    CHECK(run.keyframes >= 1);
+    CHECK(run.packets_written >= kFrameCount);
+    CHECK(run.packets_demuxed >= kFrameCount);
+    CHECK(run.frames_decoded >= kFrameCount);
+}
+
+}  // namespace
+
+TEST_CASE("FFmpeg muxer writes a decodable HEVC MP4", "[integration][amf]") {
+    CheckRun(RunMuxAndDemux("hevc", AV_CODEC_ID_HEVC));
+}
+
+TEST_CASE("FFmpeg muxer writes a decodable H.264 MP4", "[integration][amf]") {
+    CheckRun(RunMuxAndDemux("h264", AV_CODEC_ID_H264));
 }

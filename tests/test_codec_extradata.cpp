@@ -169,20 +169,22 @@ TEST_CASE("BuildCodecExtradata builds hvcC from HEVC VPS, SPS and PPS", "[mux]")
 }
 
 TEST_CASE("BuildCodecExtradata returns empty when parameter sets are missing", "[mux]") {
-    const Bytes without_sps = BuildAnnexB({
-        {0x67, 0x42, 0x00, 0x1E},
-        {0x65, 0x88, 0x84},
-    });
-    CHECK(hmmob::BuildCodecExtradata("h264", without_sps.data(),
-                                     without_sps.size())
-              .empty());
-
+    // SPS present, PPS missing.
     const Bytes without_pps = BuildAnnexB({
         {0x67, 0x42, 0x00, 0x1E},
         {0x65, 0x88, 0x84},
     });
     CHECK(hmmob::BuildCodecExtradata("h264", without_pps.data(),
                                      without_pps.size())
+              .empty());
+
+    // PPS present, SPS missing.
+    const Bytes without_sps = BuildAnnexB({
+        {0x68, 0xCE, 0x3C, 0x80},
+        {0x65, 0x88, 0x84},
+    });
+    CHECK(hmmob::BuildCodecExtradata("h264", without_sps.data(),
+                                     without_sps.size())
               .empty());
 
     const Bytes hevc_without_vps = BuildAnnexB({
