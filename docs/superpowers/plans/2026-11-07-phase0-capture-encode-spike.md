@@ -824,6 +824,7 @@ git commit -m "feat: add d3d11 device and display enumeration"
 
 ```cpp
 #include <catch2/catch_test_macros.hpp>
+#include <windows.h>
 #include "core/capture/DxgiCapture.h"
 
 TEST_CASE("DXGI capture acquires frames from the primary display", "[integration]") {
@@ -838,16 +839,23 @@ TEST_CASE("DXGI capture acquires frames from the primary display", "[integration
         SKIP("desktop duplication unavailable");
     }
 
+    POINT original{};
+    GetCursorPos(&original);
+
     int frames = 0;
-    for (int i = 0; i < 120 && frames < 20; ++i) {
+    for (int i = 0; i < 200 && frames < 20; ++i) {
+        // Desktop Duplication only produces a frame when the desktop changes.
+        // Nudge the cursor so a static desktop still generates frames.
+        SetCursorPos(original.x + (i % 2 ? 1 : -1), original.y);
         hmmob::CaptureFrame frame;
-        if (capture.Acquire(frame, 200)) {
+        if (capture.Acquire(frame, 500)) {
             REQUIRE(frame.texture);
             REQUIRE(frame.width > 0);
             REQUIRE(frame.height > 0);
             ++frames;
         }
     }
+    SetCursorPos(original.x, original.y);
     REQUIRE(frames > 0);
 }
 ```
@@ -880,6 +888,7 @@ add_library(hmmob_core STATIC
 namespace hmmob {
 
 struct CaptureFrame {
+    // Reused by the next Acquire; consume before calling Acquire again.
     Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
     int64_t pts_us = 0;
     int width = 0;
@@ -1017,7 +1026,10 @@ bool DxgiCapture::Acquire(CaptureFrame& frame, int timeout_ms) {
     HMMOB_HR_CHECK(hr);
 
     ComPtr<ID3D11Texture2D> texture;
-    HMMOB_HR_CHECK(resource.As(&texture));
+    if (FAILED(resource.As(&texture))) {
+        duplication_->ReleaseFrame();
+        return false;
+    }
     d3d_->context()->CopyResource(copy_texture_.Get(), texture.Get());
     duplication_->ReleaseFrame();
 
