@@ -10,6 +10,7 @@ Windows 高性能录屏软件。
 - Visual Studio 2022，安装「使用 C++ 的桌面开发」工作负载
 - CMake >= 3.29
 - Git
+- AMF 编码头文件：首次构建前运行 `powershell -ExecutionPolicy Bypass -File .\scripts\fetch_amf.ps1`（固定 AMF v1.5.3，需要网络）
 
 ## 构建
 

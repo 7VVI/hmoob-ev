@@ -22,12 +22,13 @@ public:
     AmfEncoder(const AmfEncoder&) = delete;
     AmfEncoder& operator=(const AmfEncoder&) = delete;
 
-    bool Initialize(ID3D11Device* device, const std::string& codec,
-                    int width, int height, int fps, int bitrate);
-    bool Encode(ID3D11Texture2D* nv12_texture, int64_t pts_us, const PacketCallback& callback);
-    bool Flush(const PacketCallback& callback);
+    [[nodiscard]] bool Initialize(ID3D11Device* device, const std::string& codec,
+                                  int width, int height, int fps, int bitrate);
+    [[nodiscard]] bool Encode(ID3D11Texture2D* nv12_texture, int64_t pts_us,
+                              const PacketCallback& callback);
+    [[nodiscard]] bool Flush(const PacketCallback& callback);
     void Shutdown();
-    bool is_initialized() const;
+    [[nodiscard]] bool is_initialized() const;
 
 private:
     struct Impl;

@@ -12,6 +12,12 @@ endif()
 
 find_package(FFMPEG REQUIRED)
 
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/amf/include/core/Factory.h")
+  message(FATAL_ERROR
+    "AMF headers not found in third_party/amf/include. "
+    "Run scripts/fetch_amf.ps1 to download them.")
+endif()
+
 add_library(hmmob_core STATIC
   src/core/common/QpcClock.cpp
   src/core/gfx/D3D11Device.cpp
