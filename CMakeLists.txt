@@ -16,6 +16,7 @@ add_library(hmmob_core STATIC
   src/core/common/QpcClock.cpp
   src/core/gfx/D3D11Device.cpp
   src/core/capture/DxgiCapture.cpp
+  src/core/gfx/VideoProcessor.cpp
 )
 target_include_directories(hmmob_core PUBLIC src)
 target_link_libraries(hmmob_core PUBLIC d3d11 dxgi)
@@ -32,6 +33,7 @@ if(BUILD_TESTING)
     tests/test_frame_queue.cpp
     tests/test_d3d11_device.cpp
     tests/test_dxgi_capture.cpp
+    tests/test_video_processor.cpp
   )
   target_link_libraries(hmmob_tests PRIVATE hmmob_core Catch2::Catch2WithMain)
   include(Catch)
