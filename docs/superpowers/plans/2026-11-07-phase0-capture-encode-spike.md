@@ -381,6 +381,7 @@ TEST_CASE("QpcClock returns monotonically increasing microseconds") {
 
 ```cpp
 #include <catch2/catch_test_macros.hpp>
+#include <atomic>
 #include <thread>
 #include "core/common/FrameQueue.h"
 
@@ -403,13 +404,15 @@ TEST_CASE("FrameQueue rejects when full") {
 
 TEST_CASE("FrameQueue close wakes a blocked pop") {
     hmmob::FrameQueue<int> q(1);
+    std::atomic<bool> pop_result{true};
     std::thread t([&] {
         int value = 0;
-        REQUIRE_FALSE(q.Pop(value, 5000));
+        pop_result = q.Pop(value, 5000);
     });
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     q.Close();
     t.join();
+    REQUIRE_FALSE(pop_result.load());
 }
 ```
 
