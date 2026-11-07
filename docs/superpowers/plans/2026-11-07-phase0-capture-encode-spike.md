@@ -1298,6 +1298,8 @@ git commit -m "feat: add bgra to nv12 gpu conversion"
 
 ## Task 7: AMD AMF 编码器
 
+> 实际实现说明（AMF 1.5.3）：include root 是 `third_party/amf/include`，因此包含写 `<core/...>`；H.264 组件是 `AMFVideoEncoderVCE_AVC`（无 `VideoEncoderH264.h`）；HEVC 使用 `AMF_VIDEO_ENCODER_HEVC_*` 属性，没有 IDRPeriod，用 `HEVC_GOP_SIZE = fps*2`；AMF PTS 单位是 100ns，`Encode` 做 us↔100ns 转换；`AMF_INPUT_FULL` 需要 drain + 1ms 重试。实测首包为 Annex B，NAL 顺序 AUD/VPS/SPS/PPS/IDR。下面的代码片段仅作历史参考，以实际提交为准。
+
 **Files:**
 - Create: `scripts/fetch_amf.ps1`, `src/core/encoder/AmfEncoder.h/.cpp`, `tests/test_amf_encoder.cpp`
 - Modify: `CMakeLists.txt`
