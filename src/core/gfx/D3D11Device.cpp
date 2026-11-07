@@ -1,5 +1,6 @@
 #include "core/gfx/D3D11Device.h"
 #include "core/common/Check.h"
+#include <cstdio>
 #include <iterator>
 
 namespace hmmob {
@@ -64,22 +65,38 @@ bool D3D11Device::Create() {
                                D3D11_SDK_VERSION, &device_, &chosen, &context_);
     }
     if (FAILED(hr) || !device_ || !context_ || chosen < D3D_FEATURE_LEVEL_11_0) {
+        std::fprintf(stderr,
+                     "D3D11CreateDevice failed: hr=0x%08lx feature_level=0x%04x "
+                     "device=%p context=%p\n",
+                     static_cast<unsigned long>(hr),
+                     static_cast<unsigned int>(chosen),
+                     static_cast<void*>(device_.Get()),
+                     static_cast<void*>(context_.Get()));
         Reset();
         return false;
     }
 
     ComPtr<IDXGIDevice> dxgi_device;
-    if (FAILED(device_.As(&dxgi_device))) {
+    hr = device_.As(&dxgi_device);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "QueryInterface(IDXGIDevice) failed: 0x%08lx\n",
+                     static_cast<unsigned long>(hr));
         Reset();
         return false;
     }
     ComPtr<IDXGIAdapter> adapter;
-    if (FAILED(dxgi_device->GetAdapter(&adapter))) {
+    hr = dxgi_device->GetAdapter(&adapter);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "IDXGIDevice::GetAdapter failed: 0x%08lx\n",
+                     static_cast<unsigned long>(hr));
         Reset();
         return false;
     }
     ComPtr<IDXGIFactory2> factory;
-    if (FAILED(adapter->GetParent(IID_PPV_ARGS(&factory)))) {
+    hr = adapter->GetParent(IID_PPV_ARGS(&factory));
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "IDXGIAdapter::GetParent(IDXGIFactory2) failed: 0x%08lx\n",
+                     static_cast<unsigned long>(hr));
         Reset();
         return false;
     }
@@ -103,6 +120,8 @@ std::vector<DisplayInfo> D3D11Device::EnumerateDisplays() const {
             break;
         }
         if (FAILED(adapter_hr) || !adapter) {
+            std::fprintf(stderr, "IDXGIFactory2::EnumAdapters1(%u) failed: 0x%08lx\n",
+                         adapter_index, static_cast<unsigned long>(adapter_hr));
             break;
         }
 
@@ -113,6 +132,10 @@ std::vector<DisplayInfo> D3D11Device::EnumerateDisplays() const {
                 break;
             }
             if (FAILED(output_hr) || !output) {
+                std::fprintf(stderr,
+                             "IDXGIAdapter1::EnumOutputs(%u) on adapter %u failed: 0x%08lx\n",
+                             output_index, adapter_index,
+                             static_cast<unsigned long>(output_hr));
                 break;
             }
 

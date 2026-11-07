@@ -20,12 +20,12 @@ TEST_CASE("D3D11 device creates and enumerates at least one display", "[integrat
         REQUIRE(d.adapter_index >= 0);
         REQUIRE(d.output_index >= 0);
         REQUIRE(d.attached_to_desktop);
+        REQUIRE_FALSE(d.name.empty());
         indices.push_back(d.index);
     }
 
     std::sort(indices.begin(), indices.end());
     REQUIRE(std::adjacent_find(indices.begin(), indices.end()) == indices.end());
-    REQUIRE(indices.size() == displays.size());
 }
 
 TEST_CASE("IsHdrColorSpace recognizes HDR and SDR color spaces") {
@@ -55,7 +55,24 @@ TEST_CASE("FromDesc1 maps descriptor fields") {
     REQUIRE(info.height == 1080);
     REQUIRE(info.attached_to_desktop);
     REQUIRE(info.hdr);
+    REQUIRE(info.rotation == DXGI_MODE_ROTATION_IDENTITY);
     REQUIRE(info.max_luminance == 1000.0f);
     REQUIRE(info.max_full_frame_luminance == 600.0f);
     REQUIRE(info.bits_per_color == 10);
+}
+
+TEST_CASE("FromDesc1 treats SDR color space as non-HDR") {
+    DXGI_OUTPUT_DESC1 desc{};
+    wcscpy_s(desc.DeviceName, L"\\\\.\\DISPLAY2");
+    desc.DesktopCoordinates = RECT{0, 0, 2560, 1440};
+    desc.AttachedToDesktop = TRUE;
+    desc.Rotation = DXGI_MODE_ROTATION_ROTATE90;
+    desc.ColorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+    desc.BitsPerColor = 8;
+
+    const auto info = hmmob::FromDesc1(desc, 0, 1, 0);
+    REQUIRE_FALSE(info.hdr);
+    REQUIRE(info.color_space == DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+    REQUIRE(info.rotation == DXGI_MODE_ROTATION_ROTATE90);
+    REQUIRE(info.bits_per_color == 8);
 }
