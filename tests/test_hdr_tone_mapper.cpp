@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cstdint>
+#include <cstdlib>
 #include <vector>
 #include "core/gfx/HdrToneMapper.h"
 
@@ -53,17 +54,23 @@ std::vector<uint8_t> ReadFirstPixel(ID3D11Device* device,
     return pixel;
 }
 
-void CheckPixelInRange(const std::vector<uint8_t>& pixel) {
+// A neutral BT.2020 white must remain neutral after conversion to BT.709.
+// This is the check that catches a transposed color matrix, which tints
+// neutral white (the old bug produced roughly B=171, G=116, R=203).
+void CheckNeutralSdrPixel(const std::vector<uint8_t>& pixel) {
     REQUIRE(pixel.size() == 4);
     INFO("pixel B=" << +pixel[0] << " G=" << +pixel[1] << " R=" << +pixel[2]
                     << " A=" << +pixel[3]);
-    // B, G, R must be visible but not clipped to pure white.
-    REQUIRE(pixel[0] > 0);
-    REQUIRE(pixel[0] < 255);
-    REQUIRE(pixel[1] > 0);
-    REQUIRE(pixel[1] < 255);
-    REQUIRE(pixel[2] > 0);
-    REQUIRE(pixel[2] < 255);
+    // B, G, R must be visible, unclipped, and in the mid-range expected after
+    // Reinhard rolloff (80 nits scRGB -> ~145, PQ 0.5 -> ~152).
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(pixel[i] > 0);
+        REQUIRE(pixel[i] < 255);
+        REQUIRE(pixel[i] >= 120);
+        REQUIRE(pixel[i] <= 180);
+    }
+    REQUIRE(std::abs(pixel[0] - pixel[1]) <= 2);
+    REQUIRE(std::abs(pixel[1] - pixel[2]) <= 2);
     REQUIRE(pixel[3] == 255);
 }
 
@@ -102,7 +109,7 @@ TEST_CASE("HdrToneMapper maps FP16 scRGB to BGRA8", "[integration]") {
     REQUIRE(out_desc.Width == kSize);
     REQUIRE(out_desc.Height == kSize);
 
-    CheckPixelInRange(ReadFirstPixel(d3d.device(), d3d.context(), output));
+    CheckNeutralSdrPixel(ReadFirstPixel(d3d.device(), d3d.context(), output));
 }
 
 TEST_CASE("HdrToneMapper maps PQ R10G10B10A2 to BGRA8", "[integration]") {
@@ -127,7 +134,7 @@ TEST_CASE("HdrToneMapper maps PQ R10G10B10A2 to BGRA8", "[integration]") {
     ID3D11Texture2D* output = mapper.Map(input.Get());
     REQUIRE(output != nullptr);
 
-    CheckPixelInRange(ReadFirstPixel(d3d.device(), d3d.context(), output));
+    CheckNeutralSdrPixel(ReadFirstPixel(d3d.device(), d3d.context(), output));
 }
 
 TEST_CASE("HdrToneMapper rejects unsupported input format", "[integration]") {

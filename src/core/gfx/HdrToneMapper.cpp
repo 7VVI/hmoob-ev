@@ -13,7 +13,7 @@ Texture2D<float4> src : register(t0);
 SamplerState samp : register(s0);
 cbuffer Params : register(b0) {
     float sdr_white_nits;
-    float max_nits;
+    float max_nits;  // reserved for a future highlight-rolloff extension
     int pq_mode;
     int pad0;
 };
@@ -45,13 +45,15 @@ float3 LinearToSrgb(float3 c) {
 float4 PSMain(VSOut input) : SV_TARGET {
     float4 sample = src.Sample(samp, input.uv);
     float3 nits = pq_mode ? PqToLinear(sample.rgb) : sample.rgb * 80.0;
+    // BT.2020 -> BT.709. Rows sum to ~1, so neutral input stays neutral; a
+    // transposed matrix would tint white.
     const float3x3 m = float3x3(
-        1.6605, -0.1246, -0.0182,
-       -0.5876,  1.1329, -0.1006,
-       -0.0728, -0.0083,  1.1187);
+         1.6605, -0.5876, -0.0728,
+        -0.1246,  1.1318, -0.0083,
+        -0.0182, -0.1006,  1.1183);
     float3 lin = mul(m, nits);
-    lin /= max(sdr_white_nits, 1.0);
-    lin = lin / (1.0 + lin * (1.0 / max(max_nits, 1.0)));
+    // Reinhard rolloff relative to SDR white: 203 nits -> ~0.5, no hard clip.
+    lin = lin / (lin + max(sdr_white_nits, 1.0));
     return float4(LinearToSrgb(lin), 1.0);
 }
 )";

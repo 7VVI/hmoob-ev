@@ -2102,9 +2102,9 @@ git commit -m "feat: add end-to-end 4k60 capture and amf encode spike"
 
 ## Task 10: HDR 抓取与基础色调映射
 
-> 实际实现补充：`pq_mode` 必须由 `capture.color_space()` 判断（PQ/BT.2020 用 `RGB_FULL_G2084_NONE_P2020` 或 `RGB_STUDIO_G2084_NONE_P2020`；scRGB 线性用 `RGB_FULL_G10_NONE_P709`），不能只看格式；`HdrToneMapper` 增加 Reset/ready、输入格式/尺寸校验和 `[[nodiscard]]`；用合成 FP16 / R10G10B10A2 纹理做 GPU 集成测试。本机是 SDR 显示器，真实 HDR 采集只能标记“未验证”。
+> 实际实现补充：`pq_mode` 必须由 `capture.color_space()` 判断（PQ/BT.2020 用 `RGB_FULL_G2084_NONE_P2020` 或 `RGB_STUDIO_G2084_NONE_P2020`；scRGB 线性用 `RGB_FULL_G10_NONE_P709`），不能只看格式；`HdrToneMapper` 增加 Reset/ready、输入格式/尺寸校验和 `[[nodiscard]]`；用合成 FP16 / R10G10B10A2 纹理做 GPU 集成测试。本机是 SDR 显示器，真实 HDR 采集只能标记“未验证”。后续修正：BT.2020→BT.709 必须用行主序矩阵（原列主序字面量配合 `mul(m, nits)` 会相当于转置并给中性白染色）；色调映射改为相对 SDR 白点的 Reinhard 曲线 `lin / (lin + sdr_white_nits)`，映射 203 nits→~0.5、1000 nits→~0.83 且无硬裁剪；测试断言中性白在 BT.709 下仍保持中性（B/G/R 差值 ≤ 2）。
 >
-> 实测：48/48 测试；合成 FP16 白点 B/G/R=171/116/203，PQ 0.5=183/124/217（未裁剪）；SDR 录制 59.66fps；`--hdr` 在 SDR 上打印降级警告并正常录 SDR；真实 HDR 采集未验证。
+> 实测（修正后）：48/48 测试；合成 FP16 白点 B/G/R=145/145/145，PQ 0.5=152/152/152（中性、未裁剪）；SDR 录制 59.66fps；`--hdr` 在 SDR 上打印降级警告并正常录 SDR；真实 HDR 采集未验证。
 
 **Files:**
 - Create: `shaders/hdr_to_sdr.hlsl`, `src/core/gfx/HdrToneMapper.h/.cpp`
@@ -2156,12 +2156,12 @@ float4 PSMain(VSOut input) : SV_TARGET {
     float4 sample = src.Sample(samp, input.uv);
     float3 nits = pq_mode ? PqToLinear(sample.rgb) : sample.rgb * 80.0;
     const float3x3 m = float3x3(
-        1.6605, -0.1246, -0.0182,
-       -0.5876,  1.1329, -0.1006,
-       -0.0728, -0.0083,  1.1187);
+         1.6605, -0.5876, -0.0728,
+        -0.1246,  1.1318, -0.0083,
+        -0.0182, -0.1006,  1.1183);
     float3 lin = mul(m, nits);
-    lin /= max(sdr_white_nits, 1.0);
-    lin = lin / (1.0 + lin * (1.0 / max(max_nits, 1.0)));
+    // Reinhard rolloff relative to SDR white: 203 nits -> ~0.5, no hard clip.
+    lin = lin / (lin + max(sdr_white_nits, 1.0));
     return float4(LinearToSrgb(lin), 1.0);
 }
 ```
@@ -2250,12 +2250,12 @@ float4 PSMain(VSOut input) : SV_TARGET {
     float4 sample = src.Sample(samp, input.uv);
     float3 nits = pq_mode ? PqToLinear(sample.rgb) : sample.rgb * 80.0;
     const float3x3 m = float3x3(
-        1.6605, -0.1246, -0.0182,
-       -0.5876,  1.1329, -0.1006,
-       -0.0728, -0.0083,  1.1187);
+         1.6605, -0.5876, -0.0728,
+        -0.1246,  1.1318, -0.0083,
+        -0.0182, -0.1006,  1.1183);
     float3 lin = mul(m, nits);
-    lin /= max(sdr_white_nits, 1.0);
-    lin = lin / (1.0 + lin * (1.0 / max(max_nits, 1.0)));
+    // Reinhard rolloff relative to SDR white: 203 nits -> ~0.5, no hard clip.
+    lin = lin / (lin + max(sdr_white_nits, 1.0));
     return float4(LinearToSrgb(lin), 1.0);
 }
 )";
