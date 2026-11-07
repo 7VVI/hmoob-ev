@@ -29,16 +29,17 @@ add_library(hmmob_core STATIC
   src/core/mux/FfmpegMuxer.cpp
   src/core/audio/AudioMixer.cpp
   src/core/audio/AacEncoder.cpp
+  src/core/audio/WasapiCapture.cpp
 )
 target_include_directories(hmmob_core PUBLIC src)
 target_include_directories(hmmob_core SYSTEM PUBLIC ${FFMPEG_INCLUDE_DIRS})
 target_include_directories(hmmob_core PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/amf/include")
-# d3dcompiler is only used by HdrToneMapper.cpp; no public header exposes it.
-# CMake still propagates it as LINK_ONLY to consumers of this static library.
-target_link_libraries(hmmob_core
-  PUBLIC d3d11 dxgi ${FFMPEG_LIBRARIES}
-  PRIVATE d3dcompiler)
+# d3dcompiler is only used by HdrToneMapper.cpp; mmdevapi/ole32/avrt/propsys by
+# WasapiCapture.cpp. CMake propagates them as LINK_ONLY to consumers of this
+# static library.
+target_link_libraries(hmmob_core PUBLIC
+  d3d11 dxgi d3dcompiler mmdevapi ole32 avrt propsys ${FFMPEG_LIBRARIES})
 
 add_executable(evspike src/spike/main.cpp)
 target_include_directories(evspike SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
@@ -60,6 +61,7 @@ if(BUILD_TESTING)
     tests/test_pcm_ring_buffer.cpp
     tests/test_audio_mixer.cpp
     tests/test_aac_encoder.cpp
+    tests/test_wasapi_capture.cpp
   )
   target_link_libraries(hmmob_tests PRIVATE hmmob_core Catch2::Catch2WithMain)
   include(Catch)
