@@ -24,11 +24,14 @@ add_library(hmmob_core STATIC
   src/core/capture/DxgiCapture.cpp
   src/core/gfx/VideoProcessor.cpp
   src/core/encoder/AmfEncoder.cpp
+  src/core/mux/CodecExtradata.cpp
+  src/core/mux/FfmpegMuxer.cpp
 )
 target_include_directories(hmmob_core PUBLIC src)
+target_include_directories(hmmob_core SYSTEM PUBLIC ${FFMPEG_INCLUDE_DIRS})
 target_include_directories(hmmob_core PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/amf/include")
-target_link_libraries(hmmob_core PUBLIC d3d11 dxgi)
+target_link_libraries(hmmob_core PUBLIC d3d11 dxgi ${FFMPEG_LIBRARIES})
 
 add_executable(evspike src/spike/main.cpp)
 target_include_directories(evspike SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
@@ -44,6 +47,8 @@ if(BUILD_TESTING)
     tests/test_dxgi_capture.cpp
     tests/test_video_processor.cpp
     tests/test_amf_encoder.cpp
+    tests/test_codec_extradata.cpp
+    tests/test_ffmpeg_muxer.cpp
   )
   target_link_libraries(hmmob_tests PRIVATE hmmob_core Catch2::Catch2WithMain)
   include(Catch)
