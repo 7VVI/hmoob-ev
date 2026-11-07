@@ -825,6 +825,7 @@ git commit -m "feat: add d3d11 device and display enumeration"
 
 ```cpp
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <windows.h>
 #include "core/capture/DxgiCapture.h"
 
@@ -844,12 +845,13 @@ TEST_CASE("DXGI capture acquires frames from the primary display", "[integration
     GetCursorPos(&original);
 
     int frames = 0;
-    for (int i = 0; i < 200 && frames < 20; ++i) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    for (int i = 0; frames < 20 && std::chrono::steady_clock::now() < deadline; ++i) {
         // Desktop Duplication only produces a frame when the desktop changes.
         // Nudge the cursor so a static desktop still generates frames.
         SetCursorPos(original.x + (i % 2 ? 1 : -1), original.y);
         hmmob::CaptureFrame frame;
-        if (capture.Acquire(frame, 500)) {
+        if (capture.Acquire(frame, 250)) {
             REQUIRE(frame.texture);
             REQUIRE(frame.width > 0);
             REQUIRE(frame.height > 0);
