@@ -525,7 +525,7 @@ hmmob-ev/
 
 ### 7.3 构建
 
-- 生成器：Ninja Multi-Config。
+- 生成器：Phase 0 使用 Visual Studio 17 2022 生成器（本机 BuildTools 已验证）；后续可增加 Ninja Multi-Config 预设，便于生成 `compile_commands.json`。
 - 预设：`windows-x64-debug`、`windows-x64-release`。
 - C++20；MSVC `/W4 /permissive- /utf-8`。
 - 运行库：Release 使用 `/MD`（Qt/FFmpeg 动态库）或 `/MT`（需统一）；第一版用 `/MD` 并随包 VC 运行库。
