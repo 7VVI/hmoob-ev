@@ -1693,6 +1693,8 @@ git commit -m "feat: add amd amf hevc/h264 encoder"
 > 实际实现补充：AMF 输出的是 Annex B 码流，MP4 需要 `avcC`/`hvcC` extradata。封装器延迟到首个包再写 header，从首包的 SPS/PPS（H.264）或 VPS/SPS/PPS（HEVC）构建 extradata，设置 `codecpar->extradata` 后再 `avformat_write_header`；否则多数播放器无法解码。新增 `CodecExtradata` 纯函数与 GPU-free 测试。
 >
 > 实测 mov muxer 不会自动把 Annex B 转成长度前缀，`WritePacket` 显式做 4 字节长度转换，并丢弃已写入 extradata 的参数集；共享的 Annex B 解析放在 `AnnexBInternal.h`；hvcC 读取 SPS 前先去除 emulation prevention bytes。HEVC 30 帧 MP4 可解封装并解码 30 帧。
+>
+> 质量加固：`Close`/`WritePacket` 的失败契约显式化；HEVC 与 H.264 都有 30 帧 mux/demux/decode 测试；hvcC 只接受 Main profile；avcC 支持 High profile 扩展；HEVC 使用 `hvc1`、H.264 使用 `avc1`；Annex B→长度前缀转换有独立单测；40/40 测试通过。
 
 **Files:**
 - Create: `src/core/mux/FfmpegMuxer.h/.cpp`
