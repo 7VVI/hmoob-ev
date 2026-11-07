@@ -40,7 +40,7 @@ DXGI → VideoProcessor → AMF → AmfPacket ───────────�
 
 要点：
 
-- **采集**：两路 `WasapiCapture` 各自在线程内以事件驱动方式读取，格式转换为 48 kHz 立体声 float32 写入环形缓冲；事件等待失败时退化为轮询，采集线程启用 MMCSS。
+- **采集**：两路 `WasapiCapture` 各自在线程内以事件驱动方式读取，格式转换为 48 kHz 立体声 float32 写入环形缓冲；设备不支持事件回调（`IAudioClient::Initialize(EVENTCALLBACK)` 失败）时重新激活客户端退化为轮询，采集线程启用 MMCSS。
 - **混音**：`AudioMixer` 对每路应用增益与开关，求和后以 `tanh` 软限幅，避免硬削波；某一路缺失或声道数不符时按静音处理。
 - **编码**：`AacEncoder` 将任意长度 PCM 切片缓冲为 1024 采样帧，输出带采样数 PTS 与 `duration` 的 `AacPacket`；首包 PTS 为 `-1024`（AAC 编码器延迟），由 mov muxer 生成 edit list。
 - **同步**：每编码一帧视频，按 `target_samples = (encoded_frames + 1) * 48000 / fps` 补齐音频采样，使音轨长度精确跟随视频帧数；录制结束时先 flush 视频编码器、再 flush AAC 编码器。
