@@ -5,12 +5,18 @@
 
 namespace hmmob {
 
+// GPU tone mapper for HDR desktop capture. Uses the D3D11 immediate context and
+// is not thread-safe: all calls must be serialized on the owning thread.
 class HdrToneMapper {
 public:
     // Requires a successfully created D3D11Device. Re-initialization is
     // supported: any previously created resources are released first.
     [[nodiscard]] bool Initialize(D3D11Device& d3d, int width, int height, bool pq_mode);
-    // Maps an R16G16B16A16_FLOAT or R10G10B10A2_UNORM texture to BGRA8.
+    // Maps an R16G16B16A16_FLOAT or R10G10B10A2_UNORM texture to this object's
+    // BGRA8 output_texture(). The input and output textures must be distinct;
+    // an aliased input is rejected. May leave viewport, shaders, sampler and
+    // the b0 constant buffer bound on the context; render-target slot 0 and
+    // shader-resource slot 0 are unbound before returning.
     [[nodiscard]] ID3D11Texture2D* Map(ID3D11Texture2D* hdr_texture);
     ID3D11Texture2D* output_texture() const { return output_.Get(); }
     int width() const { return width_; }

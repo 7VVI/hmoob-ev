@@ -182,8 +182,11 @@ int main(int argc, char** argv) {
     const bool pq_mode =
         capture.color_space() == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ||
         capture.color_space() == DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020;
+    // Don't compile shaders or allocate a full-resolution render target when
+    // capture is SDR.
+    const bool tone_map_hdr = capture.hdr() && hdr_display;
     hmmob::HdrToneMapper tone_mapper;
-    if (hdr_display && !tone_mapper.Initialize(d3d, width, height, pq_mode)) {
+    if (tone_map_hdr && !tone_mapper.Initialize(d3d, width, height, pq_mode)) {
         std::fprintf(stderr, "failed to initialize HDR tone mapper\n");
         return 1;
     }
@@ -258,16 +261,19 @@ int main(int argc, char** argv) {
                 break;
             }
             ID3D11Texture2D* source = frame.texture.Get();
-            if (frame.hdr && hdr_display) {
+            if (tone_map_hdr) {
                 source = tone_mapper.Map(frame.texture.Get());
                 if (!source) {
                     std::fprintf(stderr, "HDR tone mapping failed\n");
                     failed = true;
                     break;
                 }
-            } else if (frame.hdr && !hdr_display) {
+            } else if (frame.hdr) {
                 std::fprintf(stderr,
-                             "10-bit SDR capture is not supported in Phase 0\n");
+                             "HDR capture format %d with SDR color space %d is "
+                             "not supported in Phase 0\n",
+                             static_cast<int>(frame.format),
+                             static_cast<int>(capture.color_space()));
                 failed = true;
                 break;
             }

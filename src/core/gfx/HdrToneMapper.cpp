@@ -42,19 +42,27 @@ float3 LinearToSrgb(float3 c) {
     float3 high = 1.055 * pow(c, 1.0 / 2.4) - 0.055;
     return lerp(high, low, step(c, 0.0031308));
 }
+float3 AcesToneMap(float3 x) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
+}
 float4 PSMain(VSOut input) : SV_TARGET {
     float4 sample = src.Sample(samp, input.uv);
-    float3 nits = pq_mode ? PqToLinear(sample.rgb) : sample.rgb * 80.0;
-    // BT.2020 -> BT.709. Rows sum to ~1, so neutral input stays neutral; a
-    // transposed matrix would tint white.
+    // BT.2087 BT.2020 -> BT.709. scRGB already uses BT.709 primaries, so the
+    // matrix is only applied on the PQ path. Rows sum to 1.0.
     const float3x3 m = float3x3(
-         1.6605, -0.5876, -0.0728,
-        -0.1246,  1.1318, -0.0083,
-        -0.0182, -0.1006,  1.1183);
-    float3 lin = mul(m, nits);
-    // Reinhard rolloff relative to SDR white: 203 nits -> ~0.5, no hard clip.
-    lin = lin / (lin + max(sdr_white_nits, 1.0));
-    return float4(LinearToSrgb(lin), 1.0);
+         1.660491, -0.587641, -0.072850,
+        -0.124550,  1.132900, -0.008349,
+        -0.018151, -0.100579,  1.118730);
+    float3 nits = pq_mode ? mul(m, PqToLinear(sample.rgb)) : sample.rgb * 80.0;
+    // Out-of-gamut conversion can produce negative components; clamp them to
+    // black before the tone curve so saturated colors stay saturated.
+    float3 x = max(nits, 0.0) / max(sdr_white_nits, 1.0);
+    return float4(LinearToSrgb(AcesToneMap(x)), 1.0);
 }
 )";
 
@@ -199,6 +207,11 @@ bool HdrToneMapper::Initialize(D3D11Device& d3d, int width, int height, bool pq_
         return false;
     }
 
+    // These parameters are fixed per initialization (pq_mode only changes on
+    // re-initialization), so upload once here instead of on every Map.
+    const Constants constants{203.0f, 1000.0f, pq_mode_ ? 1 : 0, 0};
+    context_->UpdateSubresource(constants_.Get(), 0, nullptr, &constants, 0, 0);
+
     ready_ = true;
     return true;
 }
@@ -207,6 +220,11 @@ ID3D11Texture2D* HdrToneMapper::Map(ID3D11Texture2D* hdr_texture) {
     if (!ready_ || !device_ || !context_ || !output_ || !output_rtv_ ||
         !vertex_shader_ || !pixel_shader_ || !constants_ || !sampler_ ||
         !hdr_texture) {
+        return nullptr;
+    }
+    if (hdr_texture == output_.Get()) {
+        std::fprintf(stderr,
+                     "HDR tone mapping: input must not alias the output texture\n");
         return nullptr;
     }
 
@@ -250,9 +268,6 @@ ID3D11Texture2D* HdrToneMapper::Map(ID3D11Texture2D* hdr_texture) {
     if (!input_srv_) {
         return nullptr;
     }
-
-    const Constants constants{203.0f, 1000.0f, pq_mode_ ? 1 : 0, 0};
-    context_->UpdateSubresource(constants_.Get(), 0, nullptr, &constants, 0, 0);
 
     D3D11_VIEWPORT viewport{};
     viewport.Width = static_cast<float>(width_);

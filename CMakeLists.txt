@@ -32,7 +32,11 @@ target_include_directories(hmmob_core PUBLIC src)
 target_include_directories(hmmob_core SYSTEM PUBLIC ${FFMPEG_INCLUDE_DIRS})
 target_include_directories(hmmob_core PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/amf/include")
-target_link_libraries(hmmob_core PUBLIC d3d11 dxgi d3dcompiler ${FFMPEG_LIBRARIES})
+# d3dcompiler is only used by HdrToneMapper.cpp; no public header exposes it.
+# CMake still propagates it as LINK_ONLY to consumers of this static library.
+target_link_libraries(hmmob_core
+  PUBLIC d3d11 dxgi ${FFMPEG_LIBRARIES}
+  PRIVATE d3dcompiler)
 
 add_executable(evspike src/spike/main.cpp)
 target_include_directories(evspike SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})

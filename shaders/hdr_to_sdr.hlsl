@@ -5,8 +5,9 @@
 // Converts an HDR source (FP16 scRGB or R10G10B10A2 PQ) to a BGRA8 SDR image:
 //   - pq_mode == 0: samples are linear scRGB, scaled by an 80 nit SDR reference.
 //   - pq_mode == 1: samples are BT.2100 PQ encoded; decoded to linear nits.
-// The linear BT.2020 values are mapped to BT.709, tonemapped with a Reinhard
-// curve normalized to the SDR white point, and encoded to sRGB.
+// The linear BT.2020 values are mapped to BT.709 (PQ only; scRGB is already
+// BT.709), normalized to the SDR white point, tone mapped with the ACES
+// approximation, and encoded to sRGB.
 
 Texture2D<float4> src : register(t0);
 SamplerState samp : register(s0);
@@ -41,17 +42,25 @@ float3 LinearToSrgb(float3 c) {
     float3 high = 1.055 * pow(c, 1.0 / 2.4) - 0.055;
     return lerp(high, low, step(c, 0.0031308));
 }
+float3 AcesToneMap(float3 x) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
+}
 float4 PSMain(VSOut input) : SV_TARGET {
     float4 sample = src.Sample(samp, input.uv);
-    float3 nits = pq_mode ? PqToLinear(sample.rgb) : sample.rgb * 80.0;
-    // BT.2020 -> BT.709. Rows sum to ~1, so neutral input stays neutral; a
-    // transposed matrix would tint white.
+    // BT.2087 BT.2020 -> BT.709. scRGB already uses BT.709 primaries, so the
+    // matrix is only applied on the PQ path. Rows sum to 1.0.
     const float3x3 m = float3x3(
-         1.6605, -0.5876, -0.0728,
-        -0.1246,  1.1318, -0.0083,
-        -0.0182, -0.1006,  1.1183);
-    float3 lin = mul(m, nits);
-    // Reinhard rolloff relative to SDR white: 203 nits -> ~0.5, no hard clip.
-    lin = lin / (lin + max(sdr_white_nits, 1.0));
-    return float4(LinearToSrgb(lin), 1.0);
+         1.660491, -0.587641, -0.072850,
+        -0.124550,  1.132900, -0.008349,
+        -0.018151, -0.100579,  1.118730);
+    float3 nits = pq_mode ? mul(m, PqToLinear(sample.rgb)) : sample.rgb * 80.0;
+    // Out-of-gamut conversion can produce negative components; clamp them to
+    // black before the tone curve so saturated colors stay saturated.
+    float3 x = max(nits, 0.0) / max(sdr_white_nits, 1.0);
+    return float4(LinearToSrgb(AcesToneMap(x)), 1.0);
 }
