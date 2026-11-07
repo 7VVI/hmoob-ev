@@ -10,6 +10,7 @@
 #include "core/common/QpcClock.h"
 #include "core/encoder/AmfEncoder.h"
 #include "core/gfx/D3D11Device.h"
+#include "core/gfx/HdrToneMapper.h"
 #include "core/gfx/VideoProcessor.h"
 #include "core/mux/FfmpegMuxer.h"
 
@@ -36,7 +37,7 @@ void PrintUsage(std::FILE* stream) {
                  "  --codec <name>    hevc or h264 (default: hevc)\n"
                  "  --display <n>     display index, >= 0 (default: 0)\n"
                  "  --bitrate <bps>   target bitrate in bits/s, > 0 (default: 50000000)\n"
-                 "  --hdr             request HDR capture (tone mapping lands in Task 10)\n"
+                 "  --hdr             request HDR capture (tone mapped to SDR)\n"
                  "  -h, --help        show this help and exit\n");
 }
 
@@ -162,10 +163,6 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "failed to initialize dxgi capture\n");
         return 1;
     }
-    if (capture.hdr()) {
-        std::fprintf(stderr, "HDR tone mapping is added in Task 10; run without --hdr\n");
-        return 2;
-    }
     if (capture.hdr_downgraded()) {
         std::fprintf(stderr,
                      "warning: HDR capture was requested but the display is SDR; "
@@ -178,6 +175,18 @@ int main(int argc, char** argv) {
     std::printf("display=%d %dx%d format=%d fps=%d codec=%s bitrate=%d\n",
                 options.display, width, height, static_cast<int>(format),
                 options.fps, options.codec.c_str(), options.bitrate);
+
+    // PQ vs scRGB cannot be inferred from the surface format alone: HDR10
+    // streams PQ while scRGB (RGB_FULL_G10_NONE_P709) is already linear.
+    const bool hdr_display = hmmob::IsHdrColorSpace(capture.color_space());
+    const bool pq_mode =
+        capture.color_space() == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ||
+        capture.color_space() == DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020;
+    hmmob::HdrToneMapper tone_mapper;
+    if (hdr_display && !tone_mapper.Initialize(d3d, width, height, pq_mode)) {
+        std::fprintf(stderr, "failed to initialize HDR tone mapper\n");
+        return 1;
+    }
 
     hmmob::VideoProcessor converter;
     if (!converter.Initialize(d3d, width, height)) {
@@ -248,7 +257,21 @@ int main(int argc, char** argv) {
                 failed = true;
                 break;
             }
-            if (!converter.Convert(frame.texture.Get(), converter.output_texture())) {
+            ID3D11Texture2D* source = frame.texture.Get();
+            if (frame.hdr && hdr_display) {
+                source = tone_mapper.Map(frame.texture.Get());
+                if (!source) {
+                    std::fprintf(stderr, "HDR tone mapping failed\n");
+                    failed = true;
+                    break;
+                }
+            } else if (frame.hdr && !hdr_display) {
+                std::fprintf(stderr,
+                             "10-bit SDR capture is not supported in Phase 0\n");
+                failed = true;
+                break;
+            }
+            if (!converter.Convert(source, converter.output_texture())) {
                 std::fprintf(stderr, "color conversion failed\n");
                 failed = true;
                 break;
