@@ -33,7 +33,7 @@ if(BUILD_TESTING)
   )
   target_link_libraries(hmmob_tests PRIVATE hmmob_core Catch2::Catch2WithMain)
   include(Catch)
-  catch_discover_tests(hmmob_tests)
+  catch_discover_tests(hmmob_tests ADD_TAGS_AS_LABELS)
 endif()
 
 # vcpkg applocal deploys FFmpeg DLLs next to evspike.exe. Install-time deployment lands in Phase 1.

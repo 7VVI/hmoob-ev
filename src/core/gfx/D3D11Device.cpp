@@ -1,81 +1,157 @@
 #include "core/gfx/D3D11Device.h"
 #include "core/common/Check.h"
-#include <cstdlib>
+#include <iterator>
 
 namespace hmmob {
 
+namespace {
+
+int RectWidth(const RECT& rect) {
+    return rect.right - rect.left;
+}
+
+int RectHeight(const RECT& rect) {
+    return rect.bottom - rect.top;
+}
+
+}  // namespace
+
+bool IsHdrColorSpace(DXGI_COLOR_SPACE_TYPE color_space) {
+    return color_space == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ||
+           color_space == DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020 ||
+           color_space == DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
+}
+
+DisplayInfo FromDesc1(const DXGI_OUTPUT_DESC1& desc,
+                      int index, int adapter_index, int output_index) {
+    DisplayInfo info;
+    info.index = index;
+    info.adapter_index = adapter_index;
+    info.output_index = output_index;
+    info.name = desc.DeviceName;
+    info.width = RectWidth(desc.DesktopCoordinates);
+    info.height = RectHeight(desc.DesktopCoordinates);
+    info.attached_to_desktop = desc.AttachedToDesktop != FALSE;
+    info.hdr = IsHdrColorSpace(desc.ColorSpace);
+    info.color_space = desc.ColorSpace;
+    info.rotation = desc.Rotation;
+    info.max_luminance = desc.MaxLuminance;
+    info.max_full_frame_luminance = desc.MaxFullFrameLuminance;
+    info.bits_per_color = desc.BitsPerColor;
+    return info;
+}
+
+void D3D11Device::Reset() {
+    device_.Reset();
+    context_.Reset();
+    factory_.Reset();
+    feature_level_ = static_cast<D3D_FEATURE_LEVEL>(0);
+}
+
 bool D3D11Device::Create() {
-    UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-    D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
-    D3D_FEATURE_LEVEL chosen{};
+    Reset();
+
+    const UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+    const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
+    D3D_FEATURE_LEVEL chosen = static_cast<D3D_FEATURE_LEVEL>(0);
     HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
-                                   flags, levels, _countof(levels),
+                                   flags, levels, static_cast<UINT>(std::size(levels)),
                                    D3D11_SDK_VERSION, &device_, &chosen, &context_);
-    if (FAILED(hr)) {
+    if (hr == E_INVALIDARG) {
+        // The runtime may not understand feature level 11_1; retry with the SDK default list.
         hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
-                               D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0,
+                               flags, nullptr, 0,
                                D3D11_SDK_VERSION, &device_, &chosen, &context_);
     }
-    HMMOB_HR_CHECK(hr);
+    if (FAILED(hr) || !device_ || !context_ || chosen < D3D_FEATURE_LEVEL_11_0) {
+        Reset();
+        return false;
+    }
 
     ComPtr<IDXGIDevice> dxgi_device;
-    HMMOB_HR_CHECK(device_.As(&dxgi_device));
+    if (FAILED(device_.As(&dxgi_device))) {
+        Reset();
+        return false;
+    }
     ComPtr<IDXGIAdapter> adapter;
-    HMMOB_HR_CHECK(dxgi_device->GetAdapter(&adapter));
+    if (FAILED(dxgi_device->GetAdapter(&adapter))) {
+        Reset();
+        return false;
+    }
     ComPtr<IDXGIFactory2> factory;
-    HMMOB_HR_CHECK(adapter->GetParent(IID_PPV_ARGS(&factory)));
+    if (FAILED(adapter->GetParent(IID_PPV_ARGS(&factory)))) {
+        Reset();
+        return false;
+    }
+
     factory_ = factory;
+    feature_level_ = chosen;
     return true;
 }
 
 std::vector<DisplayInfo> D3D11Device::EnumerateDisplays() const {
     std::vector<DisplayInfo> result;
-    if (!device_) {
+    if (!device_ || !factory_) {
         return result;
     }
 
-    ComPtr<IDXGIDevice> dxgi_device;
-    if (FAILED(device_.As(&dxgi_device))) {
-        return result;
-    }
-    ComPtr<IDXGIAdapter> adapter;
-    if (FAILED(dxgi_device->GetAdapter(&adapter))) {
-        return result;
-    }
-
-    for (UINT i = 0;; ++i) {
-        ComPtr<IDXGIOutput> output;
-        if (adapter->EnumOutputs(i, &output) == DXGI_ERROR_NOT_FOUND) {
+    int global_index = 0;
+    for (UINT adapter_index = 0;; ++adapter_index) {
+        ComPtr<IDXGIAdapter1> adapter;
+        const HRESULT adapter_hr = factory_->EnumAdapters1(adapter_index, &adapter);
+        if (adapter_hr == DXGI_ERROR_NOT_FOUND) {
             break;
         }
-        if (!output) {
+        if (FAILED(adapter_hr) || !adapter) {
             break;
         }
 
-        DisplayInfo info;
-        info.index = static_cast<int>(i);
+        for (UINT output_index = 0;; ++output_index) {
+            ComPtr<IDXGIOutput> output;
+            const HRESULT output_hr = adapter->EnumOutputs(output_index, &output);
+            if (output_hr == DXGI_ERROR_NOT_FOUND) {
+                break;
+            }
+            if (FAILED(output_hr) || !output) {
+                break;
+            }
 
-        ComPtr<IDXGIOutput6> output6;
-        if (SUCCEEDED(output.As(&output6))) {
-            DXGI_OUTPUT_DESC1 desc1{};
-            if (SUCCEEDED(output6->GetDesc1(&desc1))) {
-                info.name = desc1.DeviceName;
-                info.width = desc1.DesktopCoordinates.right - desc1.DesktopCoordinates.left;
-                info.height = desc1.DesktopCoordinates.bottom - desc1.DesktopCoordinates.top;
-                info.color_space = desc1.ColorSpace;
-                info.hdr = desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ||
-                           desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
-                result.push_back(info);
+            DisplayInfo info;
+            bool have_desc1 = false;
+            ComPtr<IDXGIOutput6> output6;
+            if (SUCCEEDED(output.As(&output6))) {
+                DXGI_OUTPUT_DESC1 desc1{};
+                if (SUCCEEDED(output6->GetDesc1(&desc1))) {
+                    info = FromDesc1(desc1, global_index,
+                                     static_cast<int>(adapter_index),
+                                     static_cast<int>(output_index));
+                    have_desc1 = true;
+                }
+            }
+
+            if (!have_desc1) {
+                DXGI_OUTPUT_DESC desc{};
+                if (FAILED(output->GetDesc(&desc))) {
+                    continue;
+                }
+                info.index = global_index;
+                info.adapter_index = static_cast<int>(adapter_index);
+                info.output_index = static_cast<int>(output_index);
+                info.name = desc.DeviceName;
+                info.width = RectWidth(desc.DesktopCoordinates);
+                info.height = RectHeight(desc.DesktopCoordinates);
+                info.attached_to_desktop = desc.AttachedToDesktop != FALSE;
+                info.rotation = desc.Rotation;
+                // hdr, luminance, color_space, and bits_per_color keep their defaults.
+            }
+
+            // Phase 0 excludes inactive/virtual outputs that have no desktop area.
+            if (!info.attached_to_desktop || info.width <= 0 || info.height <= 0) {
                 continue;
             }
-        }
 
-        DXGI_OUTPUT_DESC desc{};
-        if (SUCCEEDED(output->GetDesc(&desc))) {
-            info.name = desc.DeviceName;
-            info.width = desc.DesktopCoordinates.right - desc.DesktopCoordinates.left;
-            info.height = desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top;
             result.push_back(info);
+            ++global_index;
         }
     }
     return result;
