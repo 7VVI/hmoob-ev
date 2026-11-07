@@ -35,11 +35,12 @@ target_include_directories(hmmob_core PUBLIC src)
 target_include_directories(hmmob_core SYSTEM PUBLIC ${FFMPEG_INCLUDE_DIRS})
 target_include_directories(hmmob_core PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/amf/include")
-# d3dcompiler is only used by HdrToneMapper.cpp; mmdevapi/ole32/avrt/propsys by
-# WasapiCapture.cpp. CMake propagates them as LINK_ONLY to consumers of this
-# static library.
-target_link_libraries(hmmob_core PUBLIC
-  d3d11 dxgi d3dcompiler mmdevapi ole32 avrt propsys ${FFMPEG_LIBRARIES})
+# d3dcompiler is only used by HdrToneMapper.cpp, so it stays PRIVATE; CMake
+# still propagates it as LINK_ONLY to consumers of this static library.
+# mmdevapi/ole32/avrt are WASAPI capture dependencies (avrt for MMCSS).
+target_link_libraries(hmmob_core
+  PUBLIC d3d11 dxgi mmdevapi ole32 avrt ${FFMPEG_LIBRARIES}
+  PRIVATE d3dcompiler)
 
 add_executable(evspike src/spike/main.cpp)
 target_include_directories(evspike SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})

@@ -2,10 +2,10 @@
 
 #include <windows.h>
 #include <audioclient.h>
+#include <avrt.h>
 #include <ksmedia.h>
 #include <mmdeviceapi.h>
 #include <mmreg.h>
-#include <propsys.h>
 #include <wrl/client.h>
 
 extern "C" {
@@ -56,16 +56,41 @@ bool IsFloat32Format(const WAVEFORMATEX* format) {
     }
     return false;
 }
+
+// Human-readable encoding family for diagnostics. For WAVE_FORMAT_EXTENSIBLE
+// the tag alone says nothing, so inspect the subformat GUID.
+const char* FormatFamily(const WAVEFORMATEX* format) {
+    if (format->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) {
+        return "float";
+    }
+    if (format->wFormatTag == WAVE_FORMAT_PCM) {
+        return "PCM";
+    }
+    if (format->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
+        format->cbSize >=
+            sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX)) {
+        const auto* extensible =
+            reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(format);
+        if (IsEqualGUID(extensible->SubFormat,
+                        KSDATAFORMAT_SUBTYPE_IEEE_FLOAT) != FALSE) {
+            return "float";
+        }
+        if (IsEqualGUID(extensible->SubFormat, KSDATAFORMAT_SUBTYPE_PCM) !=
+            FALSE) {
+            return "PCM";
+        }
+    }
+    return "unknown";
+}
 }  // namespace
 
 struct WasapiCapture::Impl {
-    bool loopback = false;
     // True only when this thread actually initialized COM (S_OK/S_FALSE).
     // RPC_E_CHANGED_MODE means another apartment already owns it, and calling
     // CoUninitialize then would unbalance that owner's reference count.
     bool com_initialized = false;
-    // Event-driven capture is the normal path; some systems reject an
-    // event-driven loopback stream, in which case we poll instead.
+    // Event-driven capture is the normal path; some systems/drivers reject
+    // EVENTCALLBACK (loopback or microphone), in which case we poll instead.
     bool event_driven = true;
     ComPtr<IMMDeviceEnumerator> enumerator;
     ComPtr<IMMDevice> device;
@@ -76,7 +101,6 @@ struct WasapiCapture::Impl {
     std::thread thread;
     std::atomic<bool> running{false};
     SwrContext* swr = nullptr;
-    int sample_rate = 48000;
     int channels = 2;
     PcmRingBuffer* ring = nullptr;
     // Owned by WasapiCapture; let the capture thread report failures without
@@ -139,6 +163,14 @@ struct WasapiCapture::Impl {
         if (FAILED(co) && co != RPC_E_CHANGED_MODE) {
             Fail("CoInitializeEx(capture thread)", co);
             return;
+        }
+        // Opt into the "Audio" real-time task so MMCSS schedules this thread
+        // with the audio work class. Failure is not fatal (e.g. RDP sessions).
+        DWORD task_index = 0;
+        HANDLE mm_task = AvSetMmThreadCharacteristicsW(L"Audio", &task_index);
+        if (!mm_task) {
+            LogHr("AvSetMmThreadCharacteristicsW",
+                  HRESULT_FROM_WIN32(GetLastError()));
         }
         try {
             while (running.load(std::memory_order_relaxed) && !HasFailed()) {
@@ -204,6 +236,9 @@ struct WasapiCapture::Impl {
             // this thread normally instead of terminating the process.
             Fail("capture thread exception", E_FAIL);
         }
+        if (mm_task) {
+            AvRevertMmThreadCharacteristics(mm_task);
+        }
         if (thread_com_initialized) {
             CoUninitialize();
         }
@@ -230,8 +265,6 @@ bool WasapiCapture::Initialize(bool loopback, int sample_rate, int channels) {
     ring_ = std::make_unique<PcmRingBuffer>(channels, sample_rate);
 
     impl_ = std::make_unique<Impl>();
-    impl_->loopback = loopback;
-    impl_->sample_rate = sample_rate;
     impl_->channels = channels;
     impl_->ring = ring_.get();
     impl_->failed = &failed_;
@@ -274,42 +307,52 @@ bool WasapiCapture::Initialize(bool loopback, int sample_rate, int channels) {
         return fail_init(hr);
     }
     if (!IsFloat32Format(impl_->mix_format)) {
+        // Phase 1 limitation: no PCM/other-format conversion. Report exactly
+        // what the endpoint exposes so the caller can warn and disable it.
         std::fprintf(stderr,
-                     "WasapiCapture: mix format tag=0x%04x bits=%u is not "
-                     "32-bit float\n",
+                     "WasapiCapture: endpoint mix format is %s%u (tag 0x%04x, "
+                     "%u ch, %lu Hz); Phase 1 supports 32-bit float only, "
+                     "capture disabled\n",
+                     FormatFamily(impl_->mix_format),
+                     static_cast<unsigned>(impl_->mix_format->wBitsPerSample),
                      static_cast<unsigned>(impl_->mix_format->wFormatTag),
-                     static_cast<unsigned>(impl_->mix_format->wBitsPerSample));
+                     static_cast<unsigned>(impl_->mix_format->nChannels),
+                     static_cast<unsigned long>(
+                         impl_->mix_format->nSamplesPerSec));
         Shutdown();
         return fail_init(E_FAIL);
     }
 
-    DWORD stream_flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
-    if (loopback) {
-        stream_flags |= AUDCLNT_STREAMFLAGS_LOOPBACK;
-    }
-    hr = impl_->client->Initialize(AUDCLNT_SHAREMODE_SHARED, stream_flags, 0, 0,
-                                   impl_->mix_format, nullptr);
-    if (FAILED(hr) && loopback &&
-        (hr == E_INVALIDARG || hr == AUDCLNT_E_EVENTHANDLE_NOT_EXPECTED)) {
-        // Event-driven loopback capture is rejected on some Windows builds and
-        // drivers. Re-activate a fresh client (Initialize is one-shot per
-        // client) and fall back to polling.
-        LogHr("IAudioClient::Initialize (event-driven loopback), retrying with "
-              "polling",
+    const DWORD endpoint_flags =
+        loopback ? AUDCLNT_STREAMFLAGS_LOOPBACK : 0;
+    hr = impl_->client->Initialize(AUDCLNT_SHAREMODE_SHARED,
+                                   AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
+                                       endpoint_flags,
+                                   0, 0, impl_->mix_format, nullptr);
+    if (FAILED(hr) && (hr == E_INVALIDARG ||
+                       hr == AUDCLNT_E_EVENTHANDLE_NOT_EXPECTED)) {
+        // Some Windows builds and drivers reject event-driven capture, for
+        // loopback streams and some microphones alike. Re-activate a fresh
+        // client (Initialize is one-shot per client) and poll instead.
+        LogHr("IAudioClient::Initialize (event-driven), retrying with polling",
               hr);
         impl_->client.Reset();
         hr = impl_->device->Activate(__uuidof(IAudioClient), CLSCTX_ALL,
                                      nullptr, &impl_->client);
-        if (SUCCEEDED(hr)) {
-            hr = impl_->client->Initialize(AUDCLNT_SHAREMODE_SHARED,
-                                           AUDCLNT_STREAMFLAGS_LOOPBACK, 0, 0,
-                                           impl_->mix_format, nullptr);
-            if (SUCCEEDED(hr)) {
-                impl_->event_driven = false;
-            }
+        if (FAILED(hr)) {
+            LogHr("Activate(IAudioClient) fallback", hr);
+            Shutdown();
+            return fail_init(hr);
         }
-    }
-    if (FAILED(hr)) {
+        hr = impl_->client->Initialize(AUDCLNT_SHAREMODE_SHARED, endpoint_flags,
+                                       0, 0, impl_->mix_format, nullptr);
+        if (FAILED(hr)) {
+            LogHr("IAudioClient::Initialize (polling fallback)", hr);
+            Shutdown();
+            return fail_init(hr);
+        }
+        impl_->event_driven = false;
+    } else if (FAILED(hr)) {
         LogHr("IAudioClient::Initialize", hr);
         Shutdown();
         return fail_init(hr);
@@ -377,6 +420,9 @@ bool WasapiCapture::Start() {
     }
     running_ = true;
     impl_->running.store(true, std::memory_order_relaxed);
+    if (impl_->event) {
+        ResetEvent(impl_->event);
+    }
     try {
         impl_->thread = std::thread(&Impl::Run, impl_.get());
     } catch (...) {
@@ -402,7 +448,12 @@ void WasapiCapture::Stop() {
         impl_->thread.join();
     }
     if (impl_->client) {
-        impl_->client->Stop();
+        // Stop() is a no-op on a stream that was never started, but a failure
+        // here can still indicate a torn-down endpoint worth reporting.
+        const HRESULT hr = impl_->client->Stop();
+        if (FAILED(hr)) {
+            LogHr("IAudioClient::Stop", hr);
+        }
     }
 }
 

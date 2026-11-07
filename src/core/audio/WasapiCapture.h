@@ -6,6 +6,21 @@
 
 namespace hmmob {
 
+// Captures one WASAPI endpoint (default render loopback or default
+// microphone) on a background thread and writes float32 frames at the
+// requested rate/channels into a PcmRingBuffer.
+//
+// Threading: Initialize, Start, Stop and Shutdown must be called from the
+// controlling thread; is_running()/failed() are meant to be read there too.
+// Read() is safe to call concurrently with the capture thread.
+//
+// Lifetime: ring() is invalidated by Initialize and Shutdown. A mixer that
+// holds the ring pointer must be detached before either call, and a capture
+// must never be re-Initialized while a mixer still points at its old ring.
+//
+// Phase 1 limitation: shared-mode endpoints must expose 32-bit float. A PCM
+// endpoint is rejected with a diagnostic (no silent audio, no S16/S24
+// conversion); callers should disable that source and warn.
 class WasapiCapture {
 public:
     // Defined in the .cpp so Impl can stay incomplete for unique_ptr.
@@ -15,13 +30,14 @@ public:
     WasapiCapture& operator=(const WasapiCapture&) = delete;
 
     // loopback=true: default render endpoint (system sound);
-    // loopback=false: default microphone. Output is 48k stereo float32.
+    // loopback=false: default microphone. Output is interleaved float32 at
+    // sample_rate/channels regardless of the endpoint's mix format.
     [[nodiscard]] bool Initialize(bool loopback, int sample_rate, int channels);
     [[nodiscard]] bool Start();
     void Stop();
     void Shutdown();
     // Copies up to `frames` interleaved float frames; returns frames copied.
-    int Read(float* interleaved, int frames);
+    [[nodiscard]] int Read(float* interleaved, int frames);
     PcmRingBuffer* ring() { return ring_.get(); }
     int sample_rate() const { return sample_rate_; }
     int channels() const { return channels_; }

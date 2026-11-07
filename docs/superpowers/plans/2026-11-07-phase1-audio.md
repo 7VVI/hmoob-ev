@@ -1513,6 +1513,12 @@ if (audio_enabled) {
 > `last_error()` 打印警告并关闭对应源
 > （`audio_mixer.SetSystemSource(nullptr)` / `SetMicSource(nullptr)`），两路都
 > 失败时设 `audio_enabled = false`，而不是持续录制静音。
+>
+> **指针生命周期：** 只在 `Initialize` 成功后再调用
+> `audio_mixer.SetSystemSource/SetMicSource`；`ring()` 在 `Initialize` 与
+> `Shutdown` 时失效。混音器仍持有 ring 指针时，绝不要重新 `Initialize` 同一个
+> `WasapiCapture`（先 `SetSystemSource(nullptr)` / `SetMicSource(nullptr)`），
+> 否则混音器会读到已释放的缓冲。
 
 在 `encoder.Flush` 之前或之后（推荐在视频 flush 之前）加入：
 
