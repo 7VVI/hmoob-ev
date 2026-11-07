@@ -510,7 +510,7 @@ hmmob-ev/
 | 依赖 | 版本 | 用途 | 许可 |
 |---|---|---|---|
 | Qt | 6.8 LTS（Widgets、Network） | UI、设置、文件库 | LGPL-3.0（动态链接） |
-| FFmpeg | 7.x shared，LGPL 构建 | 封装、AAC、解码、软件 H.264 | LGPL-2.1+ |
+| FFmpeg | 9.x shared，LGPL 构建（Phase 0 实测 vcpkg 9.0.2；如需固定版本，在 `vcpkg.json` 加 `builtin-baseline`） | 封装、AAC、解码、软件 H.264 | LGPL-2.1+ |
 | OpenH264 | 2.x | 软件 H.264 兜底 | BSD-2-Clause |
 | NVENC SDK | 13.x | NVIDIA 硬件编码 | NVIDIA SDK 许可 |
 | oneVPL | 2025.x | Intel QSV | MIT |
@@ -540,7 +540,9 @@ hmmob-ev/
 - Git 2.56；Python 3.14；winget/choco 可用。
 - GPU：AMD Radeon RX 6750 GRE 12GB，AMF 运行时 `C:\Windows\System32\amfrt64.dll` 已存在。
 - 磁盘剩余约 268GB。
-- 尚未安装 Qt 6.8、vcpkg、FFmpeg 开发库、AMF 头文件。
+- 已安装 vcpkg（`C:\vcpkg`）与 FFmpeg 9.0.2 / Catch2（manifest 模式，`vcpkg_installed`）。
+- 尚未安装 Qt 6.8、AMF 头文件。
+- 本机直连 GitHub/ffmpeg.org 会超时；开发时需要 `HTTP_PROXY`/`HTTPS_PROXY=http://127.0.0.1:10808`（本地代理，仅本机环境，不写入仓库）。
 - 本机没有 NVIDIA/Intel GPU，Phase 0 先验证 AMF；NVENC/QSV 在后续有对应硬件的机器上验证。
 
 Phase 0 需要补齐这些依赖。
@@ -551,7 +553,7 @@ Phase 0 需要补齐这些依赖。
 
 ### Phase 0：环境与技术验证（3~5 天）
 
-- 安装 Qt 6.8、vcpkg、FFmpeg 7 LGPL、编码 SDK 头文件。
+- 安装 Qt 6.8、vcpkg、FFmpeg 9.x LGPL、编码 SDK 头文件。
 - 最小程序：DXGI 抓屏 4K60 → NVENC 编码 → MP4。
 - 验证 HDR 显示器抓取格式与色调映射。
 - 验证 WASAPI Loopback + 麦克风混音。
