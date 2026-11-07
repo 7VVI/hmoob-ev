@@ -55,9 +55,11 @@ $cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7
 | `--codec <name>` | `hevc` 或 `h264` | `hevc` |
 | `--display <n>` | 显示器索引，必须 >= 0 | `0` |
 | `--bitrate <bps>` | 目标码率（bit/s），必须 > 0 | `50000000` |
-| `--hdr` | 请求 HDR 抓屏（色调映射在 Task 10 实现，当前会被拒绝） | 关闭 |
+| `--hdr` | 请求 HDR 抓屏并色调映射为 SDR；显示器为 SDR 时打印降级警告并按 SDR 录制 | 关闭 |
 | `-h`, `--help` | 显示帮助并退出 | — |
 
-录制结束后输出统计：`acquired`（成功取到的帧数，含重复帧）、`new_desktop`（真正的新桌面帧数）、`encoded`、`packets`、`bytes`、`encode_errors`、`elapsed`、`avg_fps`。运行失败时退出码为 1；请求 HDR 且显示器为 HDR 时退出码为 2（Task 10 占位）。
+录制结束后输出统计：`acquired`（成功 `Acquire` 返回的帧数，包含新桌面帧和仅指针更新帧；`Acquire` 超时复用上一帧不计入）、`new_desktop`（真正的新桌面帧数）、`encoded`（实际编码帧数）、`packets`、`bytes`、`encode_errors`、`elapsed`、`avg_fps`。例如 10 分钟静态桌面录制为 `acquired=171 new_desktop=171 encoded=36001`，其余编码帧来自超时后重复上一帧。
+
+退出码：`0` 表示成功，`1` 表示失败（参数错误、初始化失败、采集/编码/封装失败等）。
 
 > 4K60 录制需要 4K 显示器与支持 4K 实时编码的 GPU；在 2560x1440 屏幕上只能按原生分辨率验证。
