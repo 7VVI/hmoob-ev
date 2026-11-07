@@ -8,7 +8,8 @@
 namespace hmmob {
 
 struct CaptureFrame {
-    // Reused by the next Acquire; consume before calling Acquire again.
+    // Shared texture: contents are overwritten by the next Acquire.
+    // Do not enqueue or retain across Acquire; Phase 1 adds a texture pool.
     Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
     int64_t pts_us = 0;
     int width = 0;
@@ -28,14 +29,20 @@ public:
     DXGI_FORMAT format() const { return format_; }
     bool hdr() const { return hdr_; }
     bool access_lost() const { return access_lost_; }
+    DXGI_COLOR_SPACE_TYPE color_space() const { return color_space_; }
+    bool hdr_requested() const { return request_hdr_; }
+    bool hdr_downgraded() const { return request_hdr_ && !hdr_; }
 
 private:
     bool CreateDuplication();
+    bool CreateDuplicationImpl();
+    void ResetState();
 
     D3D11Device* d3d_ = nullptr;
     int display_index_ = 0;
     bool request_hdr_ = false;
     bool access_lost_ = false;
+    bool has_desktop_frame_ = false;
 
     Microsoft::WRL::ComPtr<IDXGIOutput1> output1_;
     Microsoft::WRL::ComPtr<IDXGIOutputDuplication> duplication_;
@@ -45,6 +52,9 @@ private:
     int height_ = 0;
     bool hdr_ = false;
     DXGI_FORMAT format_ = DXGI_FORMAT_B8G8R8A8_UNORM;
+    // PQ vs scRGB cannot be inferred from the format alone; consumers combine
+    // color_space() with format(). Task 10 owns that mapping.
+    DXGI_COLOR_SPACE_TYPE color_space_ = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
     QpcClock clock_;
 };
 

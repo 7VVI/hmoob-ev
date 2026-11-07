@@ -19,6 +19,10 @@ TEST_CASE("DXGI capture acquires frames from the primary display", "[integration
 
     POINT original{};
     GetCursorPos(&original);
+    struct CursorRestore {
+        POINT p;
+        ~CursorRestore() { SetCursorPos(p.x, p.y); }
+    } restore{original};
 
     int frames = 0;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
@@ -34,6 +38,5 @@ TEST_CASE("DXGI capture acquires frames from the primary display", "[integration
             ++frames;
         }
     }
-    SetCursorPos(original.x, original.y);
     REQUIRE(frames > 0);
 }

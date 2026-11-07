@@ -12,6 +12,11 @@ TEST_CASE("QpcClock returns monotonically increasing microseconds") {
     REQUIRE(b - a >= 1000);
 }
 
+TEST_CASE("QpcClock converts large tick counts without overflow") {
+    const int64_t ticks = 10'000'000LL * 86400 * 30;
+    REQUIRE(hmmob::QpcClock::TicksToUs(ticks, 10'000'000) == 30LL * 86400 * 1'000'000);
+}
+
 TEST_CASE("QpcClock never decreases across repeated calls") {
     hmmob::QpcClock clock;
     auto previous = clock.NowUs();
