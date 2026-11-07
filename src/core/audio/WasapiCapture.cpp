@@ -113,13 +113,16 @@ struct WasapiCapture::Impl {
     }
 
     // Records the first failure only, so a broken device does not spam the log
-    // once per 100 ms wait.
+    // once per 100 ms wait. Only the capture thread calls this.
     void Fail(const char* what, HRESULT hr) {
-        bool expected = false;
-        if (failed && failed->compare_exchange_strong(expected, true)) {
-            last_error->store(static_cast<long>(hr), std::memory_order_relaxed);
-            LogHr(what, hr);
+        if (!failed || failed->load(std::memory_order_relaxed)) {
+            return;
         }
+        // Publish the cause before the flag: a reader that observes
+        // failed()==true (acquire) must also observe the matching error.
+        last_error->store(static_cast<long>(hr), std::memory_order_relaxed);
+        failed->store(true, std::memory_order_release);
+        LogHr(what, hr);
     }
 
     HRESULT ConvertAndPush(const BYTE* data, UINT32 frames) {
@@ -235,6 +238,16 @@ struct WasapiCapture::Impl {
             // Vector allocation failure inside ConvertAndPush. Let Stop() join
             // this thread normally instead of terminating the process.
             Fail("capture thread exception", E_FAIL);
+        }
+        if (HasFailed() && client) {
+            // Stop the engine promptly instead of leaving it running until the
+            // controlling thread notices failed() and calls Stop(). The main
+            // thread's Stop() only runs after join(), so these calls never
+            // overlap.
+            const HRESULT stop_hr = client->Stop();
+            if (FAILED(stop_hr)) {
+                LogHr("IAudioClient::Stop (failure path)", stop_hr);
+            }
         }
         if (mm_task) {
             AvRevertMmThreadCharacteristics(mm_task);
@@ -464,7 +477,9 @@ int WasapiCapture::Read(float* interleaved, int frames) {
 bool WasapiCapture::is_running() const { return running_ && !failed(); }
 
 bool WasapiCapture::failed() const {
-    return failed_.load(std::memory_order_relaxed);
+    // Acquire pairs with the release store in Impl::Fail, so a caller that
+    // sees true can read the matching last_error().
+    return failed_.load(std::memory_order_acquire);
 }
 
 HRESULT WasapiCapture::last_error() const {
