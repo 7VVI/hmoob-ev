@@ -2103,6 +2103,8 @@ git commit -m "feat: add end-to-end 4k60 capture and amf encode spike"
 ## Task 10: HDR 抓取与基础色调映射
 
 > 实际实现补充：`pq_mode` 必须由 `capture.color_space()` 判断（PQ/BT.2020 用 `RGB_FULL_G2084_NONE_P2020` 或 `RGB_STUDIO_G2084_NONE_P2020`；scRGB 线性用 `RGB_FULL_G10_NONE_P709`），不能只看格式；`HdrToneMapper` 增加 Reset/ready、输入格式/尺寸校验和 `[[nodiscard]]`；用合成 FP16 / R10G10B10A2 纹理做 GPU 集成测试。本机是 SDR 显示器，真实 HDR 采集只能标记“未验证”。
+>
+> 实测：48/48 测试；合成 FP16 白点 B/G/R=171/116/203，PQ 0.5=183/124/217（未裁剪）；SDR 录制 59.66fps；`--hdr` 在 SDR 上打印降级警告并正常录 SDR；真实 HDR 采集未验证。
 
 **Files:**
 - Create: `shaders/hdr_to_sdr.hlsl`, `src/core/gfx/HdrToneMapper.h/.cpp`
