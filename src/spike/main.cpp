@@ -1,8 +1,9 @@
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cstdio>
-#include <cstdlib>
 #include <string>
+#include <system_error>
 #include <thread>
 
 #include "core/capture/DxgiCapture.h"
@@ -24,7 +25,39 @@ struct Options {
     bool hdr = false;
 };
 
-bool Parse(int argc, char** argv, Options& options) {
+enum class ParseResult { Ok, Help, Error };
+
+void PrintUsage(std::FILE* stream) {
+    std::fprintf(stream,
+                 "usage: evspike [options]\n"
+                 "  --output <path>   output MP4 path (default: out.mp4)\n"
+                 "  --seconds <n>     recording length in seconds, > 0 (default: 10)\n"
+                 "  --fps <n>         target frame rate, 1..1000 (default: 60)\n"
+                 "  --codec <name>    hevc or h264 (default: hevc)\n"
+                 "  --display <n>     display index, >= 0 (default: 0)\n"
+                 "  --bitrate <bps>   target bitrate in bits/s, > 0 (default: 50000000)\n"
+                 "  --hdr             request HDR capture (tone mapping lands in Task 10)\n"
+                 "  -h, --help        show this help and exit\n");
+}
+
+bool ParseInt(const char* text, int& out) {
+    if (text == nullptr || *text == '\0') {
+        return false;
+    }
+    const char* end = text;
+    while (*end != '\0') {
+        ++end;
+    }
+    int value = 0;
+    const auto result = std::from_chars(text, end, value);
+    if (result.ec != std::errc() || result.ptr != end) {
+        return false;
+    }
+    out = value;
+    return true;
+}
+
+ParseResult Parse(int argc, char** argv, Options& options) {
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         auto next = [&](const char* name) -> const char* {
@@ -34,41 +67,77 @@ bool Parse(int argc, char** argv, Options& options) {
             }
             return argv[++i];
         };
-        if (arg == "--output") {
-            const char* v = next("--output"); if (!v) return false; options.output = v;
+        if (arg == "--help" || arg == "-h") {
+            return ParseResult::Help;
+        } else if (arg == "--output") {
+            const char* v = next("--output"); if (!v) return ParseResult::Error; options.output = v;
         } else if (arg == "--seconds") {
-            const char* v = next("--seconds"); if (!v) return false; options.seconds = std::atoi(v);
+            const char* v = next("--seconds");
+            if (!v || !ParseInt(v, options.seconds)) {
+                std::fprintf(stderr, "invalid value for --seconds\n");
+                return ParseResult::Error;
+            }
         } else if (arg == "--fps") {
-            const char* v = next("--fps"); if (!v) return false; options.fps = std::atoi(v);
+            const char* v = next("--fps");
+            if (!v || !ParseInt(v, options.fps)) {
+                std::fprintf(stderr, "invalid value for --fps\n");
+                return ParseResult::Error;
+            }
         } else if (arg == "--codec") {
-            const char* v = next("--codec"); if (!v) return false; options.codec = v;
+            const char* v = next("--codec"); if (!v) return ParseResult::Error; options.codec = v;
         } else if (arg == "--display") {
-            const char* v = next("--display"); if (!v) return false; options.display = std::atoi(v);
+            const char* v = next("--display");
+            if (!v || !ParseInt(v, options.display)) {
+                std::fprintf(stderr, "invalid value for --display\n");
+                return ParseResult::Error;
+            }
         } else if (arg == "--bitrate") {
-            const char* v = next("--bitrate"); if (!v) return false; options.bitrate = std::atoi(v);
+            const char* v = next("--bitrate");
+            if (!v || !ParseInt(v, options.bitrate)) {
+                std::fprintf(stderr, "invalid value for --bitrate\n");
+                return ParseResult::Error;
+            }
         } else if (arg == "--hdr") {
             options.hdr = true;
         } else {
             std::fprintf(stderr, "unknown option: %s\n", arg.c_str());
-            return false;
+            return ParseResult::Error;
         }
     }
-    return true;
+    return ParseResult::Ok;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
     Options options;
-    if (!Parse(argc, argv, options)) {
+    const ParseResult parsed = Parse(argc, argv, options);
+    if (parsed == ParseResult::Help) {
+        PrintUsage(stdout);
+        return 0;
+    }
+    if (parsed == ParseResult::Error) {
+        PrintUsage(stderr);
         return 1;
     }
     if (options.codec != "hevc" && options.codec != "h264") {
         std::fprintf(stderr, "codec must be hevc or h264\n");
         return 1;
     }
-    if (options.seconds <= 0 || options.fps <= 0 || options.bitrate <= 0) {
-        std::fprintf(stderr, "seconds/fps/bitrate must be positive\n");
+    if (options.seconds <= 0) {
+        std::fprintf(stderr, "--seconds must be positive\n");
+        return 1;
+    }
+    if (options.fps < 1 || options.fps > 1000) {
+        std::fprintf(stderr, "--fps must be between 1 and 1000\n");
+        return 1;
+    }
+    if (options.bitrate <= 0) {
+        std::fprintf(stderr, "--bitrate must be positive\n");
+        return 1;
+    }
+    if (options.display < 0) {
+        std::fprintf(stderr, "--display must be non-negative\n");
         return 1;
     }
 
@@ -83,7 +152,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "no display found\n");
         return 1;
     }
-    if (options.display < 0 || options.display >= static_cast<int>(displays.size())) {
+    if (options.display >= static_cast<int>(displays.size())) {
         std::fprintf(stderr, "display index out of range\n");
         return 1;
     }
@@ -97,13 +166,18 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "HDR tone mapping is added in Task 10; run without --hdr\n");
         return 2;
     }
+    if (capture.hdr_downgraded()) {
+        std::fprintf(stderr,
+                     "warning: HDR capture was requested but the display is SDR; "
+                     "recording SDR\n");
+    }
 
     const int width = capture.width();
     const int height = capture.height();
+    const DXGI_FORMAT format = capture.format();
     std::printf("display=%d %dx%d format=%d fps=%d codec=%s bitrate=%d\n",
-                options.display, width, height,
-                static_cast<int>(capture.format()), options.fps,
-                options.codec.c_str(), options.bitrate);
+                options.display, width, height, static_cast<int>(format),
+                options.fps, options.codec.c_str(), options.bitrate);
 
     hmmob::VideoProcessor converter;
     if (!converter.Initialize(d3d, width, height)) {
@@ -129,8 +203,8 @@ int main(int argc, char** argv) {
     const int64_t start_us = clock.NowUs();
     const int64_t frame_interval_us = 1'000'000 / options.fps;
     int64_t next_deadline_us = start_us;
-    int64_t frame_index = 0;
-    int captured = 0;
+    int acquired = 0;
+    int new_desktop_frames = 0;
     int encoded_frames = 0;
     int packets_written = 0;
     int encode_errors = 0;
@@ -164,9 +238,13 @@ int main(int argc, char** argv) {
 
         hmmob::CaptureFrame frame;
         if (capture.Acquire(frame, 0)) {
-            if (frame.width != width || frame.height != height) {
-                std::fprintf(stderr, "display mode changed: %dx%d -> %dx%d\n",
-                             width, height, frame.width, frame.height);
+            if (frame.width != width || frame.height != height ||
+                frame.format != format) {
+                std::fprintf(stderr,
+                             "display mode changed: %dx%d fmt %d -> %dx%d fmt %d\n",
+                             width, height, static_cast<int>(format),
+                             frame.width, frame.height,
+                             static_cast<int>(frame.format));
                 failed = true;
                 break;
             }
@@ -176,7 +254,10 @@ int main(int argc, char** argv) {
                 break;
             }
             have_frame = true;
-            ++captured;
+            ++acquired;
+            if (frame.new_desktop) {
+                ++new_desktop_frames;
+            }
         } else if (capture.failed()) {
             std::fprintf(stderr, "capture failed: 0x%08lx\n",
                          static_cast<unsigned long>(capture.last_error()));
@@ -194,33 +275,48 @@ int main(int argc, char** argv) {
         }
 
         if (have_frame) {
-            const int64_t pts_us = frame_index * 1'000'000 / options.fps;
+            const int64_t pts_us =
+                static_cast<int64_t>(encoded_frames) * 1'000'000 / options.fps;
             if (!encoder.Encode(converter.output_texture(), pts_us, on_packet)) {
-                std::fprintf(stderr, "encode failed at frame %lld\n",
-                             static_cast<long long>(frame_index));
+                std::fprintf(stderr, "encode failed at frame %d\n", encoded_frames);
                 ++encode_errors;
                 failed = true;
                 break;
             }
             if (write_failed) {
-                std::fprintf(stderr, "muxer write failed at frame %lld\n",
-                             static_cast<long long>(frame_index));
+                std::fprintf(stderr, "muxer write failed at frame %d\n",
+                             encoded_frames);
                 failed = true;
                 break;
             }
             ++encoded_frames;
-            ++frame_index;
         }
 
         next_deadline_us += frame_interval_us;
         const int64_t after_us = clock.NowUs();
         if (after_us > next_deadline_us + frame_interval_us) {
-            next_deadline_us = after_us;
+            // A short stall should not cause two frames back-to-back.
+            next_deadline_us = after_us + frame_interval_us;
         }
     }
 
-    if (!encoder.Flush(on_packet)) {
+    const int64_t target_frames =
+        static_cast<int64_t>(options.seconds) * options.fps;
+    if (static_cast<int64_t>(encoded_frames) * 100 < target_frames * 99) {
+        std::fprintf(stderr,
+                     "warning: achieved %d/%lld target frames; "
+                     "output duration is shorter than requested\n",
+                     encoded_frames, static_cast<long long>(target_frames));
+    }
+
+    if (write_failed) {
+        std::fprintf(stderr, "muxer write failed; skipping encoder flush\n");
+        failed = true;
+    } else if (!encoder.Flush(on_packet)) {
         std::fprintf(stderr, "encoder flush failed\n");
+        failed = true;
+    } else if (write_failed) {
+        std::fprintf(stderr, "muxer write failed during encoder flush\n");
         failed = true;
     }
     if (!muxer.Close()) {
@@ -230,10 +326,10 @@ int main(int argc, char** argv) {
 
     const double elapsed_s =
         static_cast<double>(clock.NowUs() - start_us) / 1'000'000.0;
-    std::printf("captured=%d encoded=%d packets=%d bytes=%lld "
+    std::printf("acquired=%d new_desktop=%d encoded=%d packets=%d bytes=%lld "
                 "encode_errors=%d elapsed=%.2fs avg_fps=%.2f\n",
-                captured, encoded_frames, packets_written,
+                acquired, new_desktop_frames, encoded_frames, packets_written,
                 static_cast<long long>(encoded_bytes), encode_errors,
                 elapsed_s, encoded_frames / elapsed_s);
-    return failed ? 2 : 0;
+    return failed ? 1 : 0;
 }

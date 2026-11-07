@@ -30,3 +30,26 @@ $cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7
 & $cmake --build --preset windows-x64-release
 .\build\release\Release\evspike.exe
 ```
+
+## evspike 用法
+
+`evspike` 抓取指定显示器的桌面，转换为 NV12，用 AMD AMF 编码，并封装为 MP4。桌面无新帧时重复上一帧，按固定帧率输出。
+
+```powershell
+.\build\release\Release\evspike.exe --output C:\temp\out.mp4 --seconds 10 --fps 60 --codec hevc --bitrate 50000000
+```
+
+| 参数 | 说明 | 默认值 |
+| --- | --- | --- |
+| `--output <path>` | 输出 MP4 路径 | `out.mp4` |
+| `--seconds <n>` | 录制时长（秒），必须 > 0 | `10` |
+| `--fps <n>` | 目标帧率，范围 1..1000 | `60` |
+| `--codec <name>` | `hevc` 或 `h264` | `hevc` |
+| `--display <n>` | 显示器索引，必须 >= 0 | `0` |
+| `--bitrate <bps>` | 目标码率（bit/s），必须 > 0 | `50000000` |
+| `--hdr` | 请求 HDR 抓屏（色调映射在 Task 10 实现，当前会被拒绝） | 关闭 |
+| `-h`, `--help` | 显示帮助并退出 | — |
+
+录制结束后输出统计：`acquired`（成功取到的帧数，含重复帧）、`new_desktop`（真正的新桌面帧数）、`encoded`、`packets`、`bytes`、`encode_errors`、`elapsed`、`avg_fps`。运行失败时退出码为 1；请求 HDR 且显示器为 HDR 时退出码为 2（Task 10 占位）。
+
+> 4K60 录制需要 4K 显示器与支持 4K 实时编码的 GPU；在 2560x1440 屏幕上只能按原生分辨率验证。

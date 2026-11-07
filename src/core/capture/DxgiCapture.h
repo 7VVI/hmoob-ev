@@ -15,6 +15,9 @@ struct CaptureFrame {
     int width = 0;
     int height = 0;
     bool hdr = false;
+    // True when this acquire carried a new desktop image; false when the
+    // texture is a repeat of the previous desktop frame (pointer-only update).
+    bool new_desktop = false;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 };
 

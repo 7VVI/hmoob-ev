@@ -15,6 +15,12 @@ extern "C" {
 #include "core/mux/AnnexBInternal.h"
 #include "core/mux/CodecExtradata.h"
 
+// Fail loudly if the vcpkg FFmpeg baseline moves without a deliberate review.
+static_assert(LIBAVCODEC_VERSION_MAJOR == 63,
+              "Expected FFmpeg 9.x (libavcodec 63); update the vcpkg baseline deliberately");
+static_assert(LIBAVFORMAT_VERSION_MAJOR == 63,
+              "Expected FFmpeg 9.x (libavformat 63); update the vcpkg baseline deliberately");
+
 namespace hmmob {
 namespace {
 

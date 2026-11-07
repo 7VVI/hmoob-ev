@@ -162,6 +162,7 @@ bool DxgiCapture::Acquire(CaptureFrame& frame, int timeout_ms) {
     frame.width = width_;
     frame.height = height_;
     frame.hdr = hdr_;
+    frame.new_desktop = has_new_desktop;
     frame.format = format_;
     return true;
 }
