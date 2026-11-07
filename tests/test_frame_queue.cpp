@@ -20,6 +20,23 @@ TEST_CASE("FrameQueue rejects when full") {
     REQUIRE_FALSE(q.Push(2));
 }
 
+TEST_CASE("FrameQueue Size tracks queued items") {
+    hmmob::FrameQueue<int> q(4);
+    REQUIRE(q.Size() == 0);
+    REQUIRE(q.Push(1));
+    REQUIRE(q.Push(2));
+    REQUIRE(q.Size() == 2);
+    int value = 0;
+    REQUIRE(q.Pop(value, 10));
+    REQUIRE(q.Size() == 1);
+}
+
+TEST_CASE("FrameQueue rejects push after close") {
+    hmmob::FrameQueue<int> q(2);
+    q.Close();
+    REQUIRE_FALSE(q.Push(1));
+}
+
 TEST_CASE("FrameQueue close wakes a blocked pop") {
     hmmob::FrameQueue<int> q(1);
     std::atomic<bool> pop_result{true};
