@@ -630,10 +630,7 @@ add_library(hmmob_core STATIC
   src/core/common/QpcClock.cpp
   src/core/gfx/D3D11Device.cpp
 )
-target_link_libraries(hmmob_core PUBLIC
-  FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil
-  FFmpeg::swscale FFmpeg::swresample
-  d3d11 dxgi)
+target_link_libraries(hmmob_core PUBLIC d3d11 dxgi)
 
 # hmmob_tests 源文件加入 tests/test_d3d11_device.cpp
 ```
