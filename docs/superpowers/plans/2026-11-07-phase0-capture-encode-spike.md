@@ -712,6 +712,7 @@ private:
 ```cpp
 #include "core/gfx/D3D11Device.h"
 #include "core/common/Check.h"
+#include <cstdlib>
 
 namespace hmmob {
 
