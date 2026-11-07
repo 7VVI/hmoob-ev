@@ -1,11 +1,17 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <system_error>
 #include <thread>
+#include <vector>
 
+#include "core/audio/AacEncoder.h"
+#include "core/audio/AudioMixer.h"
+#include "core/audio/WasapiCapture.h"
 #include "core/capture/DxgiCapture.h"
 #include "core/common/QpcClock.h"
 #include "core/encoder/AmfEncoder.h"
@@ -24,6 +30,11 @@ struct Options {
     int display = 0;
     int bitrate = 50000000;
     bool hdr = false;
+    bool audio = true;
+    bool system_audio = true;
+    bool microphone = true;
+    float system_volume = 1.0f;
+    float mic_volume = 1.0f;
 };
 
 enum class ParseResult { Ok, Help, Error };
@@ -38,6 +49,11 @@ void PrintUsage(std::FILE* stream) {
                  "  --display <n>     display index, >= 0 (default: 0)\n"
                  "  --bitrate <bps>   target bitrate in bits/s, > 0 (default: 50000000)\n"
                  "  --hdr             request HDR capture (tone mapped to SDR)\n"
+                 "  --no-audio            disable all audio\n"
+                 "  --no-system-audio     disable system loopback audio\n"
+                 "  --no-mic              disable microphone\n"
+                 "  --system-volume <x>   system audio gain, 0..4 (default: 1.0)\n"
+                 "  --mic-volume <x>      microphone gain, 0..4 (default: 1.0)\n"
                  "  -h, --help        show this help and exit\n");
 }
 
@@ -52,6 +68,19 @@ bool ParseInt(const char* text, int& out) {
     int value = 0;
     const auto result = std::from_chars(text, end, value);
     if (result.ec != std::errc() || result.ptr != end) {
+        return false;
+    }
+    out = value;
+    return true;
+}
+
+bool ParseFloat(const char* text, float& out) {
+    if (text == nullptr || *text == '\0') {
+        return false;
+    }
+    char* end = nullptr;
+    const float value = std::strtof(text, &end);
+    if (end == text || *end != '\0' || !std::isfinite(value)) {
         return false;
     }
     out = value;
@@ -100,6 +129,24 @@ ParseResult Parse(int argc, char** argv, Options& options) {
             }
         } else if (arg == "--hdr") {
             options.hdr = true;
+        } else if (arg == "--no-audio") {
+            options.audio = false;
+        } else if (arg == "--no-system-audio") {
+            options.system_audio = false;
+        } else if (arg == "--no-mic") {
+            options.microphone = false;
+        } else if (arg == "--system-volume") {
+            const char* v = next("--system-volume");
+            if (!v || !ParseFloat(v, options.system_volume)) {
+                std::fprintf(stderr, "invalid value for --system-volume\n");
+                return ParseResult::Error;
+            }
+        } else if (arg == "--mic-volume") {
+            const char* v = next("--mic-volume");
+            if (!v || !ParseFloat(v, options.mic_volume)) {
+                std::fprintf(stderr, "invalid value for --mic-volume\n");
+                return ParseResult::Error;
+            }
         } else {
             std::fprintf(stderr, "unknown option: %s\n", arg.c_str());
             return ParseResult::Error;
@@ -139,6 +186,16 @@ int main(int argc, char** argv) {
     }
     if (options.display < 0) {
         std::fprintf(stderr, "--display must be non-negative\n");
+        return 1;
+    }
+    if (options.system_volume < 0.0f || options.system_volume > 4.0f) {
+        std::fprintf(stderr, "--system-volume must be between 0 and 4\n");
+        PrintUsage(stderr);
+        return 1;
+    }
+    if (options.mic_volume < 0.0f || options.mic_volume > 4.0f) {
+        std::fprintf(stderr, "--mic-volume must be between 0 and 4\n");
+        PrintUsage(stderr);
         return 1;
     }
 
@@ -204,9 +261,66 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    constexpr int kAudioSampleRate = 48000;
+    constexpr int kAudioChannels = 2;
+    constexpr int kAudioBitrate = 192000;
+
+    hmmob::WasapiCapture system_capture;
+    hmmob::WasapiCapture mic_capture;
+    bool audio_enabled = options.audio;
+    bool system_ok = false;
+    bool mic_ok = false;
+
+    if (audio_enabled && options.system_audio) {
+        system_ok = system_capture.Initialize(true, kAudioSampleRate, kAudioChannels) &&
+                    system_capture.Start();
+        if (!system_ok) {
+            std::fprintf(stderr, "warning: system audio unavailable (0x%08lx)\n",
+                         static_cast<unsigned long>(system_capture.last_error()));
+        }
+    }
+    if (audio_enabled && options.microphone) {
+        mic_ok = mic_capture.Initialize(false, kAudioSampleRate, kAudioChannels) &&
+                 mic_capture.Start();
+        if (!mic_ok) {
+            std::fprintf(stderr, "warning: microphone unavailable (0x%08lx)\n",
+                         static_cast<unsigned long>(mic_capture.last_error()));
+        }
+    }
+    audio_enabled = audio_enabled && (system_ok || mic_ok);
+
+    hmmob::AudioMixer audio_mixer(kAudioSampleRate, kAudioChannels);
+    if (system_ok) audio_mixer.SetSystemSource(system_capture.ring());
+    if (mic_ok) audio_mixer.SetMicSource(mic_capture.ring());
+    audio_mixer.SetSystemGain(options.system_volume);
+    audio_mixer.SetMicGain(options.mic_volume);
+
+    hmmob::AacEncoder aac;
+    if (audio_enabled &&
+        !aac.Initialize(kAudioSampleRate, kAudioChannels, kAudioBitrate)) {
+        std::fprintf(stderr, "warning: AAC encoder unavailable; recording video only\n");
+        audio_enabled = false;
+        system_capture.Stop();
+        mic_capture.Stop();
+        system_ok = mic_ok = false;
+        audio_mixer.SetSystemSource(nullptr);
+        audio_mixer.SetMicSource(nullptr);
+    }
+
+    hmmob::AudioConfig audio_config;
+    audio_config.enabled = audio_enabled;
+    if (audio_enabled) {
+        audio_config.sample_rate = aac.sample_rate();
+        audio_config.channels = aac.channels();
+        audio_config.bitrate = aac.bitrate();
+        audio_config.frame_size = aac.frame_size();
+        audio_config.initial_padding = aac.initial_padding_samples();
+        audio_config.extradata = aac.extradata();
+    }
+
     hmmob::FfmpegMuxer muxer;
     if (!muxer.Open(options.output, options.codec, width, height,
-                    options.fps, options.bitrate)) {
+                    options.fps, options.bitrate, audio_config)) {
         std::fprintf(stderr, "failed to open output %s\n", options.output.c_str());
         return 1;
     }
@@ -233,6 +347,21 @@ int main(int argc, char** argv) {
         }
         ++packets_written;
         encoded_bytes += static_cast<int64_t>(packet.data.size());
+    };
+
+    int audio_packets = 0;
+    int64_t audio_bytes = 0;
+    int64_t audio_samples_written = 0;
+    const auto on_audio_packet = [&](const hmmob::AacPacket& packet) {
+        const int64_t pts_us =
+            packet.pts_samples * 1'000'000 / kAudioSampleRate;
+        if (!muxer.WriteAudioPacket(packet.data.data(), packet.data.size(),
+                                    pts_us, packet.duration_samples)) {
+            write_failed = true;
+            return;
+        }
+        ++audio_packets;
+        audio_bytes += static_cast<int64_t>(packet.data.size());
     };
 
     while (clock.NowUs() - start_us <
@@ -318,6 +447,46 @@ int main(int argc, char** argv) {
                 failed = true;
                 break;
             }
+            if (audio_enabled) {
+                if (system_ok && system_capture.failed()) {
+                    std::fprintf(stderr, "system audio capture failed: 0x%08lx\n",
+                                 static_cast<unsigned long>(
+                                     system_capture.last_error()));
+                    system_capture.Stop();
+                    audio_mixer.SetSystemSource(nullptr);
+                    system_ok = false;
+                }
+                if (mic_ok && mic_capture.failed()) {
+                    std::fprintf(stderr, "microphone capture failed: 0x%08lx\n",
+                                 static_cast<unsigned long>(mic_capture.last_error()));
+                    mic_capture.Stop();
+                    audio_mixer.SetMicSource(nullptr);
+                    mic_ok = false;
+                }
+                if (!system_ok && !mic_ok) {
+                    audio_enabled = false;
+                }
+            }
+            if (audio_enabled) {
+                const int64_t target_samples =
+                    static_cast<int64_t>(encoded_frames + 1) *
+                    kAudioSampleRate / options.fps;
+                const int frames_to_mix =
+                    static_cast<int>(target_samples - audio_samples_written);
+                if (frames_to_mix > 0) {
+                    std::vector<float> audio_buffer(
+                        static_cast<size_t>(frames_to_mix) * kAudioChannels);
+                    audio_mixer.Mix(audio_buffer.data(), frames_to_mix);
+                    if (!aac.Encode(audio_buffer.data(), frames_to_mix,
+                                    on_audio_packet) ||
+                        write_failed) {
+                        std::fprintf(stderr, "audio encode/write failed\n");
+                        failed = true;
+                        break;
+                    }
+                    audio_samples_written += frames_to_mix;
+                }
+            }
             ++encoded_frames;
         }
 
@@ -328,6 +497,9 @@ int main(int argc, char** argv) {
             next_deadline_us = after_us + frame_interval_us;
         }
     }
+
+    system_capture.Stop();
+    mic_capture.Stop();
 
     const int64_t target_frames =
         static_cast<int64_t>(options.seconds) * options.fps;
@@ -347,6 +519,14 @@ int main(int argc, char** argv) {
     } else if (write_failed) {
         std::fprintf(stderr, "muxer write failed during encoder flush\n");
         failed = true;
+    } else if (audio_enabled) {
+        if (!aac.Flush(on_audio_packet)) {
+            std::fprintf(stderr, "AAC flush failed\n");
+            failed = true;
+        } else if (write_failed) {
+            std::fprintf(stderr, "muxer write failed during AAC flush\n");
+            failed = true;
+        }
     }
     if (!muxer.Close()) {
         std::fprintf(stderr, "muxer close failed\n");
@@ -356,9 +536,11 @@ int main(int argc, char** argv) {
     const double elapsed_s =
         static_cast<double>(clock.NowUs() - start_us) / 1'000'000.0;
     std::printf("acquired=%d new_desktop=%d encoded=%d packets=%d bytes=%lld "
-                "encode_errors=%d elapsed=%.2fs avg_fps=%.2f\n",
+                "encode_errors=%d audio_packets=%d audio_bytes=%lld "
+                "elapsed=%.2fs avg_fps=%.2f\n",
                 acquired, new_desktop_frames, encoded_frames, packets_written,
                 static_cast<long long>(encoded_bytes), encode_errors,
+                audio_packets, static_cast<long long>(audio_bytes),
                 elapsed_s, encoded_frames / elapsed_s);
     return failed ? 1 : 0;
 }

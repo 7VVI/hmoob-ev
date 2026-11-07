@@ -41,10 +41,22 @@ $cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7
 
 ## evspike 用法
 
-`evspike` 抓取指定显示器的桌面，转换为 NV12，用 AMD AMF 编码，并封装为 MP4。桌面无新帧时重复上一帧，按固定帧率输出。
+`evspike` 抓取指定显示器的桌面，转换为 NV12，用 AMD AMF 编码，并封装为 MP4。默认同时录制系统声音（WASAPI loopback）和麦克风，混音后编码为 AAC 音轨；桌面无新帧时重复上一帧，按固定帧率输出。
 
 ```powershell
 .\build\release\Release\evspike.exe --output C:\temp\out.mp4 --seconds 10 --fps 60 --codec hevc --bitrate 50000000
+```
+
+只录系统声音（关闭麦克风）：
+
+```powershell
+.\build\release\Release\evspike.exe --output C:\temp\sys.mp4 --seconds 10 --no-mic --system-volume 1.5
+```
+
+不录音频（仅视频）：
+
+```powershell
+.\build\release\Release\evspike.exe --output C:\temp\video.mp4 --seconds 10 --no-audio
 ```
 
 | 参数 | 说明 | 默认值 |
@@ -56,9 +68,16 @@ $cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7
 | `--display <n>` | 显示器索引，必须 >= 0 | `0` |
 | `--bitrate <bps>` | 目标码率（bit/s），必须 > 0 | `50000000` |
 | `--hdr` | 请求 HDR 抓屏并色调映射为 SDR；显示器为 SDR 时打印降级警告并按 SDR 录制 | 关闭 |
+| `--no-audio` | 关闭全部音频（仅录视频） | 音频开启 |
+| `--no-system-audio` | 关闭系统声音（loopback） | 系统声音开启 |
+| `--no-mic` | 关闭麦克风 | 麦克风开启 |
+| `--system-volume <x>` | 系统声音增益，范围 0..4 | `1.0` |
+| `--mic-volume <x>` | 麦克风增益，范围 0..4 | `1.0` |
 | `-h`, `--help` | 显示帮助并退出 | — |
 
-录制结束后输出统计：`acquired`（成功 `Acquire` 返回的帧数，包含新桌面帧和仅指针更新帧；`Acquire` 超时复用上一帧不计入）、`new_desktop`（真正的新桌面帧数）、`encoded`（实际编码帧数）、`packets`、`bytes`、`encode_errors`、`elapsed`、`avg_fps`。例如 10 分钟静态桌面录制为 `acquired=171 new_desktop=171 encoded=36001`，其余编码帧来自超时后重复上一帧。
+录制结束后输出统计：`acquired`（成功 `Acquire` 返回的帧数，包含新桌面帧和仅指针更新帧；`Acquire` 超时复用上一帧不计入）、`new_desktop`（真正的新桌面帧数）、`encoded`（实际编码帧数）、`packets`、`bytes`、`encode_errors`、`audio_packets`、`audio_bytes`、`elapsed`、`avg_fps`。例如 10 分钟静态桌面录制为 `acquired=171 new_desktop=171 encoded=36001`，其余编码帧来自超时后重复上一帧。
+
+音频说明：系统声音或麦克风不可用时会打印 `warning` 并降级为可用的一路；两路都不可用（或 AAC 编码器初始化失败）时自动改为仅录制视频，不会伪造静音音轨。相同 `WasapiCapture` 在混音器仍持有其环缓冲时不会被重新初始化。
 
 退出码：`0` 表示成功，`1` 表示失败（参数错误、初始化失败、采集/编码/封装失败等）。
 
