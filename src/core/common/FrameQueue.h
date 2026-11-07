@@ -14,14 +14,17 @@ namespace hmmob {
 template <typename T>
 class FrameQueue {
 public:
-    explicit FrameQueue(size_t capacity) : capacity_(capacity) {}
+    // capacity is a hard bound: Push rejects items once the queue is full.
+    explicit FrameQueue(size_t capacity) : capacity_(capacity) {
+        assert(capacity > 0);
+    }
 
     ~FrameQueue() {
         assert(waiters_.load(std::memory_order_relaxed) == 0 &&
                "FrameQueue destroyed with a blocked consumer; call Close() and join first");
     }
 
-    bool Push(T item) {
+    [[nodiscard]] bool Push(T item) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (closed_ || queue_.size() >= capacity_) {
             return false;
@@ -31,7 +34,8 @@ public:
         return true;
     }
 
-    bool Pop(T& out, int timeout_ms) {
+    // timeout_ms must be >= 0; negative values return immediately.
+    [[nodiscard]] bool Pop(T& out, int timeout_ms) {
         std::unique_lock<std::mutex> lock(mutex_);
         waiters_.fetch_add(1, std::memory_order_relaxed);
         const bool notified = cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms),
