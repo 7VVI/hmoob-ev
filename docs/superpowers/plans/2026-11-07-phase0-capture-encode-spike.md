@@ -1086,6 +1086,8 @@ git commit -m "feat: add dxgi desktop duplication capture"
 ## Task 6: BGRA → NV12 GPU 颜色转换
 
 > 实际实现说明：`VideoProcessorSetStreamColorSpace` / `SetOutputColorSpace` 的参数类型是 `const D3D11_VIDEO_PROCESSOR_COLOR_SPACE*`，不是 `DXGI_COLOR_SPACE_TYPE`。实际代码使用结构体形式：输入 RGB full range 0-255，输出 YCbCr studio 16-235，BT.709 matrix。下面的 `DXGI_COLOR_SPACE_TYPE` 片段仅作历史参考。
+>
+> 质量加固：增加 `Reset()`/`ready_` 生命周期、输出 view 缓存、输入 view 按纹理指针缓存、输出格式/尺寸/ArraySize 校验、`width()`/`height()` 访问器；测试用灰/白/黑/红四象限验证 studio range 与 BT.709。以实际提交为准。
 
 **Files:**
 - Create: `src/core/gfx/VideoProcessor.h/.cpp`, `tests/test_video_processor.cpp`
