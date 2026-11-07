@@ -28,6 +28,7 @@ add_library(hmmob_core STATIC
   src/core/mux/CodecExtradata.cpp
   src/core/mux/FfmpegMuxer.cpp
   src/core/audio/AudioMixer.cpp
+  src/core/audio/AacEncoder.cpp
 )
 target_include_directories(hmmob_core PUBLIC src)
 target_include_directories(hmmob_core SYSTEM PUBLIC ${FFMPEG_INCLUDE_DIRS})
@@ -58,6 +59,7 @@ if(BUILD_TESTING)
     tests/test_ffmpeg_muxer.cpp
     tests/test_pcm_ring_buffer.cpp
     tests/test_audio_mixer.cpp
+    tests/test_aac_encoder.cpp
   )
   target_link_libraries(hmmob_tests PRIVATE hmmob_core Catch2::Catch2WithMain)
   include(Catch)
