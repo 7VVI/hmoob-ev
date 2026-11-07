@@ -10,14 +10,11 @@ if(MSVC)
   add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
 endif()
 
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-find_package(FFmpeg REQUIRED)
+find_package(FFMPEG REQUIRED)
 
 add_executable(evspike src/spike/main.cpp)
-target_include_directories(evspike PRIVATE src)
-target_link_libraries(evspike PRIVATE
-  FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil
-  FFmpeg::swscale FFmpeg::swresample)
+target_include_directories(evspike PRIVATE src ${FFMPEG_INCLUDE_DIRS})
+target_link_libraries(evspike PRIVATE ${FFMPEG_LIBRARIES})
 
 # Phase 0: run evspike with the vcpkg bin directory on PATH.
 # A proper DLL deployment step lands in Phase 1.
