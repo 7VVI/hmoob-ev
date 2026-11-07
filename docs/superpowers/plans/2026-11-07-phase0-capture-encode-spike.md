@@ -308,10 +308,8 @@ target_link_libraries(evspike PRIVATE
   FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil
   FFmpeg::swscale FFmpeg::swresample)
 
-add_custom_command(TARGET evspike POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    $<TARGET_RUNTIME_DLLS:evspike> $<TARGET_FILE_DIR:evspike>
-  COMMAND_EXPAND_LISTS)
+# Phase 0: run evspike with C:\vcpkg\installed\x64-windows\bin on PATH.
+# A proper DLL deployment step lands in Phase 1.
 ```
 
 - [ ] **Step 5: 修改 `src/spike/main.cpp` 为 FFmpeg 冒烟测试**
@@ -337,10 +335,11 @@ int main() {
 $cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
 & $cmake --preset windows-x64-release
 & $cmake --build --preset windows-x64-release
+$env:PATH = "C:\vcpkg\installed\x64-windows\bin;$env:PATH"
 .\build\release\Release\evspike.exe
 ```
 
-预期：打印 FFmpeg 版本号，且同目录有 FFmpeg DLL。
+预期：打印 FFmpeg 版本号。Phase 0 通过 PATH 加载 FFmpeg DLL；正式部署在 Phase 1 处理。
 
 - [ ] **Step 7: 提交**
 
