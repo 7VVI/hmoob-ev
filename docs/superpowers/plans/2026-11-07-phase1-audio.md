@@ -487,9 +487,16 @@ namespace hmmob {
 
 struct AacPacket {
     std::vector<uint8_t> data;
+    // PTS in samples under time_base = 1/sample_rate. The first packet is
+    // negative by initial_padding_samples() (encoder priming).
     int64_t pts_samples = 0;
+    // Decoded samples this packet produces (normally 1024; the final packet
+    // may be shorter when AV_CODEC_CAP_SMALL_LAST_FRAME is supported).
+    int duration_samples = 0;
 };
 
+// Stateful, not thread-safe. Encode accepts arbitrary chunk sizes; Flush emits
+// the delayed tail; Encode/Flush fail after Flush until Initialize is called.
 class AacEncoder {
 public:
     using PacketCallback = std::function<void(const AacPacket&)>;
@@ -505,6 +512,8 @@ public:
     [[nodiscard]] bool Flush(const PacketCallback& callback);
     void Shutdown();
     [[nodiscard]] bool is_initialized() const;
+    // Encoder delay in samples (1024 with FFmpeg's native AAC); 0 if unset.
+    [[nodiscard]] int initial_padding_samples() const;
     // AudioSpecificConfig from the AAC encoder; must be copied into the MP4
     // audio codecpar before avformat_write_header.
     [[nodiscard]] const std::vector<uint8_t>& extradata() const;
@@ -564,6 +573,7 @@ struct AacEncoder::Impl {
             }
             AacPacket out;
             out.pts_samples = packet->pts;
+            out.duration_samples = static_cast<int>(packet->duration);
             out.data.assign(packet->data, packet->data + packet->size);
             callback(out);
             av_packet_unref(packet);
@@ -767,6 +777,9 @@ struct AudioConfig {
     int sample_rate = 48000;
     int channels = 2;
     int bitrate = 192000;
+    // Encoder priming delay in samples (AacEncoder::initial_padding_samples);
+    // the muxer offsets the audio timeline by this much (MP4 edit list).
+    int initial_padding = 0;
     // AudioSpecificConfig from the AAC encoder.
     std::vector<uint8_t> extradata;
 };
@@ -785,8 +798,10 @@ bool Open(const std::string& path, const std::string& codec,
 ```cpp
 // Writes one AAC access unit. If the container header has not been written
 // yet (waiting for the first video packet), the packet is buffered and
-// flushed when the header is written.
-bool WriteAudioPacket(const uint8_t* data, size_t size, int64_t pts_us);
+// flushed when the header is written. `duration_samples` comes from
+// AacPacket::duration_samples (stream time_base is 1/sample_rate).
+bool WriteAudioPacket(const uint8_t* data, size_t size, int64_t pts_us,
+                      int duration_samples);
 ```
 
 在类注释里补充：音频包在 header 前最多缓冲 5 秒；超过则失败。
@@ -798,7 +813,11 @@ bool WriteAudioPacket(const uint8_t* data, size_t size, int64_t pts_us);
 ```cpp
 AVStream* audio_stream = nullptr;
 AudioConfig audio;
-struct PendingAudio { std::vector<uint8_t> data; int64_t pts_us; };
+struct PendingAudio {
+    std::vector<uint8_t> data;
+    int64_t pts_us;
+    int duration_samples;
+};
 std::vector<PendingAudio> pending_audio;
 ```
 
@@ -817,9 +836,13 @@ if (audio.enabled) {
     par->codec_id = AV_CODEC_ID_AAC;
     par->sample_rate = audio.sample_rate;
     av_channel_layout_default(&par->ch_layout, audio.channels);
-    par->format = AV_SAMPLE_FMT_FLTP;
+    // Encoded AAC is not PCM; leave the sample format unspecified.
+    par->format = AV_SAMPLE_FMT_NONE;
     par->bit_rate = audio.bitrate;
     par->codec_tag = 0;
+    par->frame_size = 1024;
+    // Priming delay; movenc turns this into the MP4 edit list.
+    par->initial_padding = audio.initial_padding;
     if (!audio.extradata.empty()) {
         par->extradata = static_cast<uint8_t*>(av_mallocz(
             audio.extradata.size() + AV_INPUT_BUFFER_PADDING_SIZE));
@@ -835,11 +858,15 @@ if (audio.enabled) {
 }
 ```
 
+不要在写入前把音频首包的负 PTS（`-initial_padding`）截断为 0：movenc 会依据
+`codecpar->initial_padding` 写 edit list，把 priming 从成片时间线上去掉。
+
 在 `WritePacket` 的视频首包 header 写出之后（`impl_->header_written = true;` 之后）加入：
 
 ```cpp
 for (const auto& pending : impl_->pending_audio) {
-    if (!WriteAudioPacket(pending.data.data(), pending.data.size(), pending.pts_us)) {
+    if (!WriteAudioPacket(pending.data.data(), pending.data.size(),
+                          pending.pts_us, pending.duration_samples)) {
         return false;
     }
 }
@@ -849,7 +876,8 @@ impl_->pending_audio.clear();
 实现 `WriteAudioPacket`：
 
 ```cpp
-bool FfmpegMuxer::WriteAudioPacket(const uint8_t* data, size_t size, int64_t pts_us) {
+bool FfmpegMuxer::WriteAudioPacket(const uint8_t* data, size_t size, int64_t pts_us,
+                                   int duration_samples) {
     if (!impl_ || !impl_->format || !impl_->audio_stream || !data || size == 0 ||
         impl_->write_failed) {
         return false;
@@ -862,7 +890,8 @@ bool FfmpegMuxer::WriteAudioPacket(const uint8_t* data, size_t size, int64_t pts
             impl_->write_failed = true;
             return false;
         }
-        impl_->pending_audio.push_back({std::vector<uint8_t>(data, data + size), pts_us});
+        impl_->pending_audio.push_back(
+            {std::vector<uint8_t>(data, data + size), pts_us, duration_samples});
         return true;
     }
 
@@ -879,6 +908,9 @@ bool FfmpegMuxer::WriteAudioPacket(const uint8_t* data, size_t size, int64_t pts
     packet->dts = pts_us;
     packet->stream_index = impl_->audio_stream->index;
     av_packet_rescale_ts(packet, kMicrosecondTimeBase, impl_->audio_stream->time_base);
+    // After rescaling the stream time base is 1/sample_rate, so the duration
+    // is already expressed in samples.
+    packet->duration = duration_samples;
     const int result = av_interleaved_write_frame(impl_->format, packet);
     av_packet_free(&packet);
     if (result < 0) {
@@ -1417,6 +1449,7 @@ hmmob::AudioConfig audio_config;
 audio_config.enabled = audio_enabled;
 if (audio_enabled) {
     audio_config.extradata = aac.extradata();
+    audio_config.initial_padding = aac.initial_padding_samples();
 }
 muxer.Open(..., audio_config);
 ```
@@ -1431,7 +1464,8 @@ int64_t audio_bytes = 0;
 int64_t audio_samples_written = 0;
 const auto on_audio_packet = [&](const hmmob::AacPacket& packet) {
     const int64_t pts_us = packet.pts_samples * 1'000'000 / kAudioSampleRate;
-    if (!muxer.WriteAudioPacket(packet.data.data(), packet.data.size(), pts_us)) {
+    if (!muxer.WriteAudioPacket(packet.data.data(), packet.data.size(), pts_us,
+                                packet.duration_samples)) {
         write_failed = true;
         return;
     }

@@ -3,7 +3,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/channel_layout.h>
-#include <libavutil/opt.h>
+#include <libavutil/error.h>
 #include <libavutil/samplefmt.h>
 #include <libswresample/swresample.h>
 }
@@ -15,20 +15,25 @@ extern "C" {
 namespace hmmob {
 namespace {
 void LogAv(const char* what, int error) {
-    std::fprintf(stderr, "AacEncoder: %s failed (%d)\n", what, error);
+    char message[AV_ERROR_MAX_STRING_SIZE] = {};
+    av_strerror(error, message, sizeof(message));
+    std::fprintf(stderr, "AacEncoder: %s failed: %s (%d)\n", what, message, error);
 }
 }  // namespace
 
 struct AacEncoder::Impl {
     AVCodecContext* codec = nullptr;
+    // Static codec descriptor (owned by libavcodec); its capabilities replace
+    // AVCodecContext::capabilities, which FFmpeg 9 no longer exposes.
+    const AVCodec* codec_def = nullptr;
     AVFrame* frame = nullptr;
     AVPacket* packet = nullptr;
     SwrContext* swr = nullptr;
     // Interleaved float32 samples not yet handed to the encoder.
     std::vector<float> pending;
-    int sample_rate = 0;
     int channels = 0;
     int64_t next_pts_samples = 0;
+    bool flushed = false;
     std::vector<uint8_t> extradata;
 
     bool Drain(const PacketCallback& callback) {
@@ -43,6 +48,7 @@ struct AacEncoder::Impl {
             }
             AacPacket out;
             out.pts_samples = packet->pts;
+            out.duration_samples = static_cast<int>(packet->duration);
             out.data.assign(packet->data, packet->data + packet->size);
             callback(out);
             av_packet_unref(packet);
@@ -65,19 +71,18 @@ struct AacEncoder::Impl {
         return Drain(callback);
     }
 
-    // Encodes one frame from the front of `pending`, which must hold at least
-    // frame_size frames. The input is consumed whether or not swr buffered a
-    // little output delay; pts advance by the number of output samples.
-    bool EncodeFrame(const PacketCallback& callback) {
+    // Encodes the first `samples_to_encode` frames of `pending`. Callers pass
+    // frame_size for regular frames, or a shorter count for a small last frame.
+    // The input is consumed via swr; pts advance by the converted sample count.
+    bool EncodeFrame(int samples_to_encode, const PacketCallback& callback) {
         const int available = static_cast<int>(pending.size() / channels);
-        if (available <= 0) {
+        if (samples_to_encode <= 0 || samples_to_encode > available ||
+            samples_to_encode > codec->frame_size) {
+            LogAv("EncodeFrame", AVERROR(EINVAL));
             return false;
         }
-        // Feed exactly one encoder frame. Passing the whole pending buffer here
-        // would leave the rest buffered inside swr while we drop it below.
-        const int in_frames = std::min(available, codec->frame_size);
         av_frame_unref(frame);
-        frame->nb_samples = codec->frame_size;
+        frame->nb_samples = samples_to_encode;
         frame->format = codec->sample_fmt;
         frame->sample_rate = codec->sample_rate;
         const int layout = av_channel_layout_copy(&frame->ch_layout, &codec->ch_layout);
@@ -94,22 +99,27 @@ struct AacEncoder::Impl {
         const uint8_t* input[1] = {
             reinterpret_cast<const uint8_t*>(pending.data())};
         const int converted = swr_convert(
-            swr, frame->data, frame->nb_samples, input, in_frames);
+            swr, frame->data, frame->nb_samples, input, samples_to_encode);
         if (converted < 0) {
             LogAv("swr_convert", converted);
             return false;
         }
-        if (converted == 0) {
-            LogAv("swr_convert", AVERROR(EINVAL));
+        // Only same-rate FLT -> FLTP conversion is supported here, so the
+        // converter must be sample-exact. Rate conversion would need
+        // swr_get_delay() and delayed-input PTS accounting instead.
+        if (converted != samples_to_encode) {
+            std::fprintf(stderr,
+                         "AacEncoder: swr_convert produced %d of %d samples\n",
+                         converted, samples_to_encode);
             return false;
         }
-        frame->nb_samples = converted;
         if (!SendFrame(frame, callback)) {
             return false;
         }
         next_pts_samples += converted;
-        pending.erase(pending.begin(),
-                      pending.begin() + static_cast<std::ptrdiff_t>(in_frames) * channels);
+        pending.erase(
+            pending.begin(),
+            pending.begin() + static_cast<std::ptrdiff_t>(samples_to_encode) * channels);
         return true;
     }
 };
@@ -122,7 +132,6 @@ bool AacEncoder::Initialize(int sample_rate, int channels, int bitrate) {
         return false;
     }
     impl_ = new Impl();
-    impl_->sample_rate = sample_rate;
     impl_->channels = channels;
 
     const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
@@ -136,12 +145,14 @@ bool AacEncoder::Initialize(int sample_rate, int channels, int bitrate) {
         Shutdown();
         return false;
     }
+    impl_->codec_def = codec;
     impl_->codec->sample_rate = sample_rate;
     impl_->codec->bit_rate = bitrate;
     impl_->codec->sample_fmt = AV_SAMPLE_FMT_FLTP;
     impl_->codec->profile = AV_PROFILE_AAC_LOW;
-    // MP4 wants raw AAC access units plus AudioSpecificConfig in extradata,
-    // which the native encoder only emits in global-header mode.
+    // Keep global-header mode for MP4 output. The native encoder emits a
+    // 5-byte AudioSpecificConfig (base ASC plus the SBR-absent sync extension)
+    // that must be copied verbatim into codecpar; empty extradata is fatal.
     impl_->codec->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     av_channel_layout_default(&impl_->codec->ch_layout, channels);
     impl_->codec->time_base = AVRational{1, sample_rate};
@@ -188,7 +199,14 @@ bool AacEncoder::Initialize(int sample_rate, int channels, int bitrate) {
 
 bool AacEncoder::Encode(const float* interleaved, int frames,
                         const PacketCallback& callback) {
-    if (!impl_ || !impl_->codec || !interleaved || frames <= 0 || !callback) {
+    if (!impl_ || !impl_->codec || impl_->flushed || !callback || frames < 0) {
+        return false;
+    }
+    if (frames == 0) {
+        // Nothing to encode; an empty input is a benign no-op.
+        return true;
+    }
+    if (!interleaved) {
         return false;
     }
     impl_->pending.insert(
@@ -197,7 +215,7 @@ bool AacEncoder::Encode(const float* interleaved, int frames,
     const int frame_size = impl_->codec->frame_size;
     while (static_cast<int>(impl_->pending.size() /
                             static_cast<size_t>(impl_->channels)) >= frame_size) {
-        if (!impl_->EncodeFrame(callback)) {
+        if (!impl_->EncodeFrame(frame_size, callback)) {
             return false;
         }
     }
@@ -205,25 +223,37 @@ bool AacEncoder::Encode(const float* interleaved, int frames,
 }
 
 bool AacEncoder::Flush(const PacketCallback& callback) {
-    if (!impl_ || !impl_->codec || !callback) {
+    if (!impl_ || !impl_->codec || impl_->flushed || !callback) {
+        return false;
+    }
+    const int frame_size = impl_->codec->frame_size;
+    const size_t max_samples =
+        static_cast<size_t>(frame_size) * static_cast<size_t>(impl_->channels);
+    if (impl_->pending.size() > max_samples) {
+        // Encode() always drains full frames, so this indicates a logic error;
+        // resizing would silently discard samples.
+        std::fprintf(stderr, "AacEncoder: pending tail exceeds one frame\n");
         return false;
     }
     if (!impl_->pending.empty()) {
-        const size_t target = static_cast<size_t>(impl_->codec->frame_size) *
-                              static_cast<size_t>(impl_->channels);
-        if (impl_->pending.size() < target) {
-            impl_->pending.resize(target, 0.0f);
-        }
-        if (!impl_->EncodeFrame(callback)) {
-            return false;
+        const int remaining =
+            static_cast<int>(impl_->pending.size() / static_cast<size_t>(impl_->channels));
+        if (impl_->codec_def->capabilities & AV_CODEC_CAP_SMALL_LAST_FRAME) {
+            if (!impl_->EncodeFrame(remaining, callback)) {
+                return false;
+            }
+        } else {
+            impl_->pending.resize(max_samples, 0.0f);
+            if (!impl_->EncodeFrame(frame_size, callback)) {
+                return false;
+            }
         }
     }
-    const int sent = avcodec_send_frame(impl_->codec, nullptr);
-    if (sent < 0 && sent != AVERROR_EOF) {
-        LogAv("avcodec_send_frame(flush)", sent);
+    if (!impl_->SendFrame(nullptr, callback)) {
         return false;
     }
-    return impl_->Drain(callback);
+    impl_->flushed = true;
+    return true;
 }
 
 void AacEncoder::Shutdown() {
@@ -248,6 +278,10 @@ void AacEncoder::Shutdown() {
 
 bool AacEncoder::is_initialized() const {
     return impl_ && impl_->codec;
+}
+
+int AacEncoder::initial_padding_samples() const {
+    return impl_ && impl_->codec ? impl_->codec->initial_padding : 0;
 }
 
 const std::vector<uint8_t>& AacEncoder::extradata() const {
