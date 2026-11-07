@@ -214,6 +214,8 @@ git commit -m "build: add phase 0 CMake skeleton"
 
 ## Task 2: vcpkg + FFmpeg 冒烟测试
 
+> 实际实现说明：最终采用 vcpkg 自带的 `FindFFMPEG.cmake`（`find_package(FFMPEG REQUIRED)` + `${FFMPEG_LIBRARIES}`），并在 `vcpkg.json` 中 pin 了 `builtin-baseline`。下面的自定义 `FindFFmpeg.cmake` 步骤仅保留为历史记录，实际代码以提交 `12d35f1`、`3bfc66f`、`382935f` 为准。
+
 **Files:**
 - Create: `vcpkg.json`, `cmake/FindFFmpeg.cmake`
 - Modify: `CMakeLists.txt`, `src/spike/main.cpp`
