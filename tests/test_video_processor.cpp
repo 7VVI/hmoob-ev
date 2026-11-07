@@ -157,9 +157,9 @@ TEST_CASE("VideoProcessor supports re-initialization", "[integration]") {
     }
 
     hmmob::VideoProcessor processor;
-    REQUIRE(processor.Initialize(d3d, kWidth, kHeight));
-    REQUIRE(processor.width() == kWidth);
-    REQUIRE(processor.height() == kHeight);
+    REQUIRE(processor.Initialize(d3d, 320, 180));
+    REQUIRE(processor.width() == 320);
+    REQUIRE(processor.height() == 180);
 
     REQUIRE(processor.Initialize(d3d, kWidth, kHeight));
     REQUIRE(processor.width() == kWidth);
@@ -170,4 +170,18 @@ TEST_CASE("VideoProcessor supports re-initialization", "[integration]") {
     REQUIRE(src.Get() != nullptr);
 
     REQUIRE(processor.Convert(src.Get(), processor.output_texture()));
+}
+
+TEST_CASE("VideoProcessor resets after failed Initialize", "[integration]") {
+    hmmob::D3D11Device d3d;
+    if (!d3d.Create()) {
+        SKIP("D3D11 device unavailable");
+    }
+
+    hmmob::VideoProcessor processor;
+    REQUIRE(processor.Initialize(d3d, 320, 180));
+    REQUIRE_FALSE(processor.Initialize(d3d, 0, 0));
+    REQUIRE(processor.width() == 0);
+    REQUIRE(processor.height() == 0);
+    REQUIRE_FALSE(processor.Convert(nullptr, nullptr));
 }

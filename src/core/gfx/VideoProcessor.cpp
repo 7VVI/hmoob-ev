@@ -2,8 +2,6 @@
 
 #include <cstdio>
 
-#include "core/common/Check.h"
-
 namespace hmmob {
 namespace {
 
@@ -150,6 +148,9 @@ bool VideoProcessor::Convert(ID3D11Texture2D* bgra, ID3D11Texture2D* nv12) {
         return false;
     }
 
+    // The cached input view holds a COM reference to its texture, so a released
+    // texture's address cannot be reused while cached (ABA-safe). The last
+    // input texture and its view are retained until Reset/re-initialization.
     if (cached_input_ != bgra) {
         input_view_.Reset();
         cached_input_ = nullptr;

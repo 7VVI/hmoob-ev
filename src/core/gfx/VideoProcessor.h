@@ -10,6 +10,9 @@ public:
     // Requires a successfully created D3D11Device. Re-initialization is
     // supported: any previously created resources are released first.
     [[nodiscard]] bool Initialize(D3D11Device& d3d, int width, int height);
+    // Converts into this object's output_texture(); `nv12` must equal
+    // output_texture(). The parameter is kept for API symmetry and may be
+    // removed in Phase 1.
     [[nodiscard]] bool Convert(ID3D11Texture2D* bgra, ID3D11Texture2D* nv12);
     ID3D11Texture2D* output_texture() const { return output_.Get(); }
     int width() const { return width_; }
