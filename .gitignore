@@ -3,6 +3,9 @@
 /.vs/
 /.vscode/
 /third_party/amf/src/
+/third_party/amf/include/
+/vcpkg_installed/
+/CMakeUserPresets.json
 *.user
 *.suo
 *.mp4
