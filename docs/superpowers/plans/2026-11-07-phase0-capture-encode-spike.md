@@ -601,6 +601,8 @@ git commit -m "feat: add qpc clock and bounded frame queue"
 
 ## Task 4: D3D11 设备与显示器枚举
 
+> 实际实现补充：`DisplayInfo` 增加 `adapter_index`、`output_index`、`attached_to_desktop`、`rotation`、亮度与色深字段；`EnumerateDisplays` 遍历所有 DXGI adapter；`Create()` 失败清理并校验 feature level；HDR 判定抽成 `IsHdrColorSpace` / `FromDesc1` 并有 GPU-free 测试。以实际提交为准。
+
 **Files:**
 - Create: `src/core/common/Check.h`, `src/core/gfx/D3D11Device.h/.cpp`, `tests/test_d3d11_device.cpp`
 - Modify: `CMakeLists.txt`
