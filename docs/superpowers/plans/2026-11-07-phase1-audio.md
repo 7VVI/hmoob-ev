@@ -777,8 +777,9 @@ struct AudioConfig {
     int sample_rate = 48000;
     int channels = 2;
     int bitrate = 192000;
-    // Encoder priming delay in samples (AacEncoder::initial_padding_samples);
-    // the muxer offsets the audio timeline by this much (MP4 edit list).
+    // Encoder priming delay in samples (AacEncoder::initial_padding_samples).
+    // Metadata only for MP4 in FFmpeg 9: movenc derives the edit list from the
+    // negative first DTS, so the negative first PTS must NOT be clamped.
     int initial_padding = 0;
     // AudioSpecificConfig from the AAC encoder.
     std::vector<uint8_t> extradata;
