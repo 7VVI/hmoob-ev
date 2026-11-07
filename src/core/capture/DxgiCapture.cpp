@@ -20,15 +20,21 @@ void DxgiCapture::ResetState() {
     format_ = DXGI_FORMAT_B8G8R8A8_UNORM;
     color_space_ = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
     has_desktop_frame_ = false;
+    failed_ = false;
+    last_error_ = S_OK;
 }
 
 bool DxgiCapture::CreateDuplication() {
     ResetState();
     if (!CreateDuplicationImpl()) {
         ResetState();
+        failed_ = true;
+        last_error_ = E_FAIL;
         return false;
     }
     access_lost_ = false;
+    failed_ = false;
+    last_error_ = S_OK;
     return true;
 }
 
@@ -111,12 +117,21 @@ bool DxgiCapture::Acquire(CaptureFrame& frame, int timeout_ms) {
         ResetState();
         return false;
     }
-    HMMOB_HR_CHECK(hr);
+    if (FAILED(hr)) {
+        // WAIT_TIMEOUT and ACCESS_LOST are handled above; anything else is a
+        // real acquisition failure (e.g. DXGI_ERROR_DEVICE_REMOVED).
+        failed_ = true;
+        last_error_ = hr;
+        return false;
+    }
 
     const bool has_new_desktop = info.LastPresentTime.QuadPart != 0;
     if (has_new_desktop) {
         ComPtr<ID3D11Texture2D> texture;
-        if (FAILED(resource.As(&texture))) {
+        const HRESULT as_hr = resource.As(&texture);
+        if (FAILED(as_hr)) {
+            failed_ = true;
+            last_error_ = as_hr;
             duplication_->ReleaseFrame();
             return false;
         }
@@ -125,6 +140,8 @@ bool DxgiCapture::Acquire(CaptureFrame& frame, int timeout_ms) {
         if (src_desc.Format != format_ ||
             src_desc.Width != static_cast<UINT>(width_) ||
             src_desc.Height != static_cast<UINT>(height_)) {
+            failed_ = true;
+            last_error_ = E_FAIL;
             duplication_->ReleaseFrame();
             duplication_.Reset();
             return false;

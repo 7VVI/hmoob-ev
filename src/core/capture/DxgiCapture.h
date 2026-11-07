@@ -29,6 +29,11 @@ public:
     DXGI_FORMAT format() const { return format_; }
     bool hdr() const { return hdr_; }
     bool access_lost() const { return access_lost_; }
+    // True when the last Acquire/Initialize hit an unrecoverable acquisition
+    // error (device removed, format mismatch, duplication creation failure).
+    // A WAIT_TIMEOUT or ACCESS_LOST is not a failure.
+    bool failed() const { return failed_; }
+    HRESULT last_error() const { return last_error_; }
     DXGI_COLOR_SPACE_TYPE color_space() const { return color_space_; }
     bool hdr_requested() const { return request_hdr_; }
     bool hdr_downgraded() const { return request_hdr_ && !hdr_; }
@@ -42,6 +47,8 @@ private:
     int display_index_ = 0;
     bool request_hdr_ = false;
     bool access_lost_ = false;
+    bool failed_ = false;
+    HRESULT last_error_ = S_OK;
     bool has_desktop_frame_ = false;
 
     Microsoft::WRL::ComPtr<IDXGIOutput1> output1_;

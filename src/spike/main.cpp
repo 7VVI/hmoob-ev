@@ -133,18 +133,20 @@ int main(int argc, char** argv) {
     int captured = 0;
     int encoded_frames = 0;
     int packets_written = 0;
-    int drops = 0;
+    int encode_errors = 0;
     int64_t encoded_bytes = 0;
     bool have_frame = false;
     bool failed = false;
+    bool write_failed = false;
 
     const auto on_packet = [&](const hmmob::AmfPacket& packet) {
-        ++packets_written;
-        encoded_bytes += static_cast<int64_t>(packet.data.size());
         if (!muxer.WritePacket(packet.data.data(), packet.data.size(),
                                packet.pts_us, packet.keyframe)) {
-            failed = true;
+            write_failed = true;
+            return;
         }
+        ++packets_written;
+        encoded_bytes += static_cast<int64_t>(packet.data.size());
     };
 
     while (clock.NowUs() - start_us <
@@ -175,6 +177,16 @@ int main(int argc, char** argv) {
             }
             have_frame = true;
             ++captured;
+        } else if (capture.failed()) {
+            std::fprintf(stderr, "capture failed: 0x%08lx\n",
+                         static_cast<unsigned long>(capture.last_error()));
+            if (capture.last_error() == DXGI_ERROR_DEVICE_REMOVED && d3d.device()) {
+                std::fprintf(stderr, "device removed reason: 0x%08lx\n",
+                             static_cast<unsigned long>(
+                                 d3d.device()->GetDeviceRemovedReason()));
+            }
+            failed = true;
+            break;
         } else if (capture.access_lost()) {
             std::fprintf(stderr, "capture access lost\n");
             failed = true;
@@ -183,10 +195,16 @@ int main(int argc, char** argv) {
 
         if (have_frame) {
             const int64_t pts_us = frame_index * 1'000'000 / options.fps;
-            if (!encoder.Encode(converter.output_texture(), pts_us, on_packet) || failed) {
+            if (!encoder.Encode(converter.output_texture(), pts_us, on_packet)) {
                 std::fprintf(stderr, "encode failed at frame %lld\n",
                              static_cast<long long>(frame_index));
-                ++drops;
+                ++encode_errors;
+                failed = true;
+                break;
+            }
+            if (write_failed) {
+                std::fprintf(stderr, "muxer write failed at frame %lld\n",
+                             static_cast<long long>(frame_index));
                 failed = true;
                 break;
             }
@@ -212,10 +230,10 @@ int main(int argc, char** argv) {
 
     const double elapsed_s =
         static_cast<double>(clock.NowUs() - start_us) / 1'000'000.0;
-    std::printf("captured=%d encoded=%d packets=%d bytes=%lld drops=%d "
-                "elapsed=%.2fs avg_fps=%.2f\n",
+    std::printf("captured=%d encoded=%d packets=%d bytes=%lld "
+                "encode_errors=%d elapsed=%.2fs avg_fps=%.2f\n",
                 captured, encoded_frames, packets_written,
-                static_cast<long long>(encoded_bytes), drops, elapsed_s,
-                encoded_frames / elapsed_s);
+                static_cast<long long>(encoded_bytes), encode_errors,
+                elapsed_s, encoded_frames / elapsed_s);
     return failed ? 2 : 0;
 }

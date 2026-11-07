@@ -3,6 +3,27 @@
 #include <windows.h>
 #include "core/capture/DxgiCapture.h"
 
+TEST_CASE("DXGI capture starts and resets without a failure") {
+    hmmob::DxgiCapture capture;
+    REQUIRE_FALSE(capture.failed());
+    REQUIRE(capture.last_error() == S_OK);
+    capture.Shutdown();
+    REQUIRE_FALSE(capture.failed());
+    REQUIRE(capture.last_error() == S_OK);
+}
+
+TEST_CASE("DXGI capture reports failure for an invalid display index", "[integration]") {
+    hmmob::D3D11Device d3d;
+    if (!d3d.Create()) {
+        SKIP("D3D11 device unavailable");
+    }
+
+    hmmob::DxgiCapture capture;
+    REQUIRE_FALSE(capture.Initialize(d3d, -1, false));
+    REQUIRE(capture.failed());
+    REQUIRE(capture.last_error() != S_OK);
+}
+
 TEST_CASE("DXGI capture acquires frames from the primary display", "[integration]") {
     hmmob::D3D11Device d3d;
     if (!d3d.Create()) {
