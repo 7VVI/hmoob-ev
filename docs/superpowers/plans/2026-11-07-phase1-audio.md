@@ -1505,6 +1505,15 @@ if (audio_enabled) {
 }
 ```
 
+> **采集线程运行时失败（Task 4 修复）：** `WasapiCapture` 新增
+> `bool failed() const` 与 `HRESULT last_error() const`。采集线程遇到 WASAPI
+> 错误或 `swr_convert` 失败时会自行退出并置位 `failed()`，`is_running()` 也会
+> 变为 false。每个 tick 在混音前检查
+> `system_capture.failed() || mic_capture.failed()`；一旦置位，用
+> `last_error()` 打印警告并关闭对应源
+> （`audio_mixer.SetSystemSource(nullptr)` / `SetMicSource(nullptr)`），两路都
+> 失败时设 `audio_enabled = false`，而不是持续录制静音。
+
 在 `encoder.Flush` 之前或之后（推荐在视频 flush 之前）加入：
 
 ```cpp
