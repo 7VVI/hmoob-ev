@@ -1886,6 +1886,8 @@ git commit -m "feat: add ffmpeg mp4 muxer"
 ## Task 9: evspike 端到端 4K60 SDR 录制
 
 > 实际实现补充：采集循环按目标 FPS 节奏输出；`Acquire` 超时则复用上一帧 NV12（AMF 在 `Encode` 内拷贝，调用方纹理可复用）；显示器尺寸变化时停止并给出明确错误；统计 `captured`（新桌面帧）、`encoded_frames`（目标帧）、`packets`、`bytes`、`drops`；检查 muxer WritePacket/Close 返回值。本机显示器为 2560×1440，4K60 只能标记为“目标规格，当前硬件验证 1440p60”。
+>
+> 实测（2560×1440 SDR）：10 秒、600 帧、59.89fps、HEVC Main hvc1、ffmpeg 解码 0 错误；`captured=2` 是因为桌面静止，600 个编码帧证明复用上一帧的节奏路径正确。静态画面码率约 3.4Mbps（内容受限），4K60 未验证。
 
 **Files:**
 - Modify: `src/spike/main.cpp`
