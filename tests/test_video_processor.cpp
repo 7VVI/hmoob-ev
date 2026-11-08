@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <array>
 #include <vector>
 #include "core/gfx/VideoProcessor.h"
 
@@ -124,6 +125,92 @@ TEST_CASE("VideoProcessor converts BGRA to NV12", "[integration]") {
     REQUIRE(u <= 145);
     REQUIRE(v >= 110);
     REQUIRE(v <= 145);
+}
+
+TEST_CASE("VideoProcessor crops the source rectangle", "[integration]") {
+    hmmob::D3D11Device d3d;
+    if (!d3d.Create()) {
+        SKIP("D3D11 device unavailable");
+    }
+
+    hmmob::VideoProcessor converter;
+    REQUIRE(converter.Initialize(d3d, 64, 64, 32, 32, DXGI_FORMAT_B8G8R8A8_UNORM));
+
+    // Left half red, right half blue (BGRA byte order).
+    std::vector<uint8_t> bgra(static_cast<size_t>(64) * 64 * 4);
+    for (int y = 0; y < 64; ++y) {
+        for (int x = 0; x < 64; ++x) {
+            if (x < 32) {
+                SetPixel(bgra, 64, x, y, 0, 0, 255, 255);
+            } else {
+                SetPixel(bgra, 64, x, y, 255, 0, 0, 255);
+            }
+        }
+    }
+    auto input = CreateBgraTexture(d3d.device(), 64, 64, bgra);
+    REQUIRE(input.Get() != nullptr);
+
+    D3D11_TEXTURE2D_DESC staging_desc{};
+    staging_desc.Width = 32;
+    staging_desc.Height = 32;
+    staging_desc.MipLevels = 1;
+    staging_desc.ArraySize = 1;
+    staging_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    staging_desc.SampleDesc.Count = 1;
+    staging_desc.Usage = D3D11_USAGE_STAGING;
+    staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
+    REQUIRE(SUCCEEDED(d3d.device()->CreateTexture2D(&staging_desc, nullptr, &staging)));
+
+    const auto center_pixel = [&](const RECT& source_rect) {
+        REQUIRE(converter.Convert(input.Get(), converter.output_texture(),
+                                  source_rect));
+        d3d.context()->CopyResource(staging.Get(), converter.output_texture());
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        REQUIRE(SUCCEEDED(
+            d3d.context()->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)));
+        const auto* row = static_cast<const uint8_t*>(mapped.pData) +
+                          16 * mapped.RowPitch;
+        const int b = row[16 * 4 + 0];
+        const int g = row[16 * 4 + 1];
+        const int r = row[16 * 4 + 2];
+        d3d.context()->Unmap(staging.Get(), 0);
+        return std::array<int, 3>{b, g, r};
+    };
+
+    const RECT left{0, 0, 32, 32};
+    const auto red = center_pixel(left);
+    REQUIRE(red[0] < 16);
+    REQUIRE(red[1] < 16);
+    REQUIRE(red[2] > 240);
+
+    const RECT right{32, 0, 64, 32};
+    const auto blue = center_pixel(right);
+    REQUIRE(blue[0] > 240);
+    REQUIRE(blue[1] < 16);
+    REQUIRE(blue[2] < 16);
+}
+
+TEST_CASE("VideoProcessor rejects a source rectangle outside the input") {
+    hmmob::D3D11Device d3d;
+    if (!d3d.Create()) {
+        SKIP("D3D11 device unavailable");
+    }
+
+    hmmob::VideoProcessor converter;
+    REQUIRE(converter.Initialize(d3d, 64, 64, 32, 32, DXGI_FORMAT_B8G8R8A8_UNORM));
+
+    std::vector<uint8_t> bgra(static_cast<size_t>(64) * 64 * 4, 128);
+    auto input = CreateBgraTexture(d3d.device(), 64, 64, bgra);
+    REQUIRE(input.Get() != nullptr);
+
+    const RECT empty{0, 0, 0, 0};
+    REQUIRE_FALSE(
+        converter.Convert(input.Get(), converter.output_texture(), empty));
+
+    const RECT outside{48, 48, 80, 80};
+    REQUIRE_FALSE(
+        converter.Convert(input.Get(), converter.output_texture(), outside));
 }
 
 TEST_CASE("VideoProcessor rejects Convert before Initialize") {

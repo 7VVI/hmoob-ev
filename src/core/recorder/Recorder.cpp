@@ -12,7 +12,8 @@
 #include "core/audio/AacEncoder.h"
 #include "core/audio/AudioMixer.h"
 #include "core/audio/WasapiCapture.h"
-#include "core/capture/DxgiCapture.h"
+#include "core/capture/DesktopSource.h"
+#include "core/capture/VideoSource.h"
 #include "core/common/QpcClock.h"
 #include "core/encoder/AmfEncoder.h"
 #include "core/gfx/D3D11Device.h"
@@ -50,6 +51,23 @@ private:
 };
 
 void ReportWarning(const char* message) { std::fprintf(stderr, "%s\n", message); }
+
+std::unique_ptr<VideoSource> CreateVideoSource(CaptureMode mode,
+                                               std::string& error) {
+    switch (mode) {
+        case CaptureMode::Screen:
+        case CaptureMode::Region:
+            return std::make_unique<DesktopSource>();
+        case CaptureMode::Window:
+            error = "window capture is not implemented yet";
+            return nullptr;
+        case CaptureMode::Camera:
+            error = "camera capture is not implemented yet";
+            return nullptr;
+    }
+    error = "unknown capture mode";
+    return nullptr;
+}
 
 }  // namespace
 
@@ -95,7 +113,8 @@ struct Recorder::Impl {
     void Run();
     void PublishStats(int64_t now_us);
     void ResetRunState();
-    void PublishPreview(ID3D11DeviceContext* context, ID3D11Texture2D* source);
+    void PublishPreview(ID3D11DeviceContext* context, ID3D11Texture2D* source,
+                        const RECT& source_rect);
 
     // Keeps the first failure: later cleanup failures are consequences of it.
     void RecordError(std::string message) {
@@ -146,7 +165,8 @@ void Recorder::Impl::PublishStats(int64_t now_us) {
 }
 
 void Recorder::Impl::PublishPreview(ID3D11DeviceContext* context,
-                                    ID3D11Texture2D* source) {
+                                    ID3D11Texture2D* source,
+                                    const RECT& source_rect) {
     if (!context || !source || !preview_staging ||
         !preview_converter.output_texture()) {
         return;
@@ -165,7 +185,8 @@ void Recorder::Impl::PublishPreview(ID3D11DeviceContext* context,
     // Downscale to the preview size on the GPU. The result is a BGRA8 texture
     // so the readback rows can be handed to the UI as-is.
     if (!preview_converter.Convert(source,
-                                   preview_converter.output_texture())) {
+                                   preview_converter.output_texture(),
+                                   source_rect)) {
         log_failure("conversion", E_FAIL);
         return;
     }
@@ -246,20 +267,31 @@ void Recorder::Impl::Run() {
         return;
     }
 
-    DxgiCapture capture;
-    if (!capture.Initialize(d3d, config.display_index, config.hdr)) {
-        fail_init("failed to initialize dxgi capture");
+    std::string source_error;
+    const std::unique_ptr<VideoSource> source =
+        CreateVideoSource(config.mode, source_error);
+    if (!source) {
+        fail_init(source_error);
         return;
     }
-    if (capture.hdr_downgraded()) {
+    if (!source->Initialize(d3d, config, source_error)) {
+        fail_init(source_error.empty() ? "failed to initialize capture source"
+                                       : source_error);
+        return;
+    }
+    if (source->hdr_downgraded()) {
         ReportWarning(
             "warning: HDR capture was requested but the display is SDR; "
             "recording SDR");
     }
 
-    const int width = capture.width();
-    const int height = capture.height();
-    const DXGI_FORMAT format = capture.format();
+    // Encoded size (the region in Region mode) and the size of the texture the
+    // source actually delivers.
+    const int width = source->width();
+    const int height = source->height();
+    const int texture_width = source->texture_width();
+    const int texture_height = source->texture_height();
+    const DXGI_FORMAT format = source->format();
     {
         std::lock_guard<std::mutex> lock(mutex);
         stats.display_width = width;
@@ -269,21 +301,25 @@ void Recorder::Impl::Run() {
 
     // PQ vs scRGB cannot be inferred from the surface format alone: HDR10
     // streams PQ while scRGB (RGB_FULL_G10_NONE_P709) is already linear.
-    const bool hdr_display = IsHdrColorSpace(capture.color_space());
+    const bool hdr_display = IsHdrColorSpace(source->color_space());
     const bool pq_mode =
-        capture.color_space() == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ||
-        capture.color_space() == DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020;
+        source->color_space() == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ||
+        source->color_space() == DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020;
     // Don't compile shaders or allocate a full-resolution render target when
     // capture is SDR.
-    const bool tone_map_hdr = capture.hdr() && hdr_display;
+    const bool tone_map_hdr = source->hdr_capable() && hdr_display;
     HdrToneMapper tone_mapper;
-    if (tone_map_hdr && !tone_mapper.Initialize(d3d, width, height, pq_mode)) {
+    if (tone_map_hdr &&
+        !tone_mapper.Initialize(d3d, texture_width, texture_height, pq_mode)) {
         fail_init("failed to initialize HDR tone mapper");
         return;
     }
 
+    // Input is the full captured texture; output is the encoded size, which
+    // differs from the input in Region mode.
     VideoProcessor converter;
-    if (!converter.Initialize(d3d, width, height)) {
+    if (!converter.Initialize(d3d, texture_width, texture_height, width, height,
+                              DXGI_FORMAT_NV12)) {
         fail_init("failed to initialize video processor");
         return;
     }
@@ -377,7 +413,7 @@ void Recorder::Impl::Run() {
         config.preview_fps > 0;
     if (preview_requested) {
         preview_interval = std::max(1, config.fps / config.preview_fps);
-        if (!preview_converter.Initialize(d3d, width, height,
+        if (!preview_converter.Initialize(d3d, texture_width, texture_height,
                                           config.preview_width,
                                           config.preview_height,
                                           DXGI_FORMAT_B8G8R8A8_UNORM)) {
@@ -417,8 +453,10 @@ void Recorder::Impl::Run() {
     bool have_frame = false;
     bool write_failed = false;
     // Latest BGRA source handed to the encoder path; reused for previews on
-    // iterations where no new desktop frame arrived.
+    // iterations where no new desktop frame arrived. The rectangle is the
+    // encoded region inside that texture.
     ID3D11Texture2D* last_source = nullptr;
+    RECT last_source_rect{};
 
     const auto fail = [&](std::string message) {
         RecordError(std::move(message));
@@ -473,8 +511,8 @@ void Recorder::Impl::Run() {
             std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
             continue;
         }
-        CaptureFrame frame;
-        if (capture.Acquire(frame, 0)) {
+        SourceFrame frame;
+        if (source->Acquire(frame, 0)) {
             if (frame.width != width || frame.height != height ||
                 frame.format != format) {
                 char message[128];
@@ -486,10 +524,10 @@ void Recorder::Impl::Run() {
                 fail(message);
                 break;
             }
-            ID3D11Texture2D* source = frame.texture.Get();
+            ID3D11Texture2D* encoded_source = frame.texture;
             if (tone_map_hdr) {
-                source = tone_mapper.Map(frame.texture.Get());
-                if (!source) {
+                encoded_source = tone_mapper.Map(frame.texture);
+                if (!encoded_source) {
                     fail("HDR tone mapping failed");
                     break;
                 }
@@ -500,33 +538,35 @@ void Recorder::Impl::Run() {
                     "HDR capture format %d with SDR color space %d is "
                     "not supported in Phase 0",
                     static_cast<int>(frame.format),
-                    static_cast<int>(capture.color_space()));
+                    static_cast<int>(source->color_space()));
                 fail(message);
                 break;
             }
-            if (!converter.Convert(source, converter.output_texture())) {
+            if (!converter.Convert(encoded_source, converter.output_texture(),
+                                   frame.source_rect)) {
                 fail("color conversion failed");
                 break;
             }
             have_frame = true;
-            last_source = source;
+            last_source = encoded_source;
+            last_source_rect = frame.source_rect;
             ++acquired;
-            if (frame.new_desktop) {
+            if (frame.new_frame) {
                 ++new_desktop_frames;
             }
-        } else if (capture.failed()) {
+        } else if (source->failed()) {
             char message[96];
             std::snprintf(message, sizeof(message), "capture failed: 0x%08lx",
-                          static_cast<unsigned long>(capture.last_error()));
+                          static_cast<unsigned long>(source->last_error()));
             fail(message);
-            if (capture.last_error() == DXGI_ERROR_DEVICE_REMOVED &&
+            if (source->last_error() == DXGI_ERROR_DEVICE_REMOVED &&
                 d3d.device()) {
                 std::fprintf(stderr, "device removed reason: 0x%08lx\n",
                              static_cast<unsigned long>(
                                  d3d.device()->GetDeviceRemovedReason()));
             }
             break;
-        } else if (capture.access_lost()) {
+        } else if (source->access_lost()) {
             fail("capture access lost");
             break;
         }
@@ -611,7 +651,7 @@ void Recorder::Impl::Run() {
             // small preview texture.
             if (have_frame && preview_enabled &&
                 encoded_frames % preview_interval == 0) {
-                PublishPreview(d3d.context(), last_source);
+                PublishPreview(d3d.context(), last_source, last_source_rect);
             }
         }
 

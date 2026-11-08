@@ -22,6 +22,7 @@ add_library(hmmob_core STATIC
   src/core/common/QpcClock.cpp
   src/core/gfx/D3D11Device.cpp
   src/core/capture/DxgiCapture.cpp
+  src/core/capture/DesktopSource.cpp
   src/core/gfx/VideoProcessor.cpp
   src/core/gfx/HdrToneMapper.cpp
   src/core/encoder/AmfEncoder.cpp

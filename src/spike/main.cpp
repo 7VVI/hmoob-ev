@@ -17,6 +17,11 @@ struct Options {
     int fps = 60;
     std::string codec = "hevc";
     int display = 0;
+    bool has_region = false;
+    int region_x = 0;
+    int region_y = 0;
+    int region_width = 0;
+    int region_height = 0;
     int bitrate = 50000000;
     bool hdr = false;
     bool audio = true;
@@ -36,6 +41,7 @@ void PrintUsage(std::FILE* stream) {
                  "  --fps <n>               target frame rate, 1..1000 (default: 60)\n"
                  "  --codec <name>          hevc or h264 (default: hevc)\n"
                  "  --display <n>           display index, >= 0 (default: 0)\n"
+                 "  --region <x>,<y>,<w>,<h>  record one region of the display\n"
                  "  --bitrate <bps>         target bitrate in bits/s, > 0 (default: 50000000)\n"
                  "  --hdr                   request HDR capture (tone mapped to SDR)\n"
                  "  --no-audio              disable all audio\n"
@@ -76,6 +82,31 @@ bool ParseFloat(const char* text, float& out) {
     return true;
 }
 
+bool ParseRegion(const char* text, int (&values)[4]) {
+    if (text == nullptr || *text == '\0') {
+        return false;
+    }
+    const std::string input = text;
+    size_t start = 0;
+    for (int i = 0; i < 4; ++i) {
+        const size_t comma = input.find(',', start);
+        const bool last = i == 3;
+        if (last ? comma != std::string::npos : comma == std::string::npos) {
+            return false;
+        }
+        const size_t end = last ? input.size() : comma;
+        if (end == start) {
+            return false;
+        }
+        const std::string part = input.substr(start, end - start);
+        if (!ParseInt(part.c_str(), values[i])) {
+            return false;
+        }
+        start = end + 1;
+    }
+    return true;
+}
+
 ParseResult Parse(int argc, char** argv, Options& options) {
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -110,6 +141,19 @@ ParseResult Parse(int argc, char** argv, Options& options) {
                 std::fprintf(stderr, "invalid value for --display\n");
                 return ParseResult::Error;
             }
+        } else if (arg == "--region") {
+            const char* v = next("--region");
+            int values[4] = {};
+            if (!v || !ParseRegion(v, values)) {
+                std::fprintf(stderr,
+                             "invalid value for --region (expected x,y,w,h)\n");
+                return ParseResult::Error;
+            }
+            options.has_region = true;
+            options.region_x = values[0];
+            options.region_y = values[1];
+            options.region_width = values[2];
+            options.region_height = values[3];
         } else if (arg == "--bitrate") {
             const char* v = next("--bitrate");
             if (!v || !ParseInt(v, options.bitrate)) {
@@ -177,6 +221,13 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "--display must be non-negative\n");
         return 1;
     }
+    if (options.has_region &&
+        (options.region_x < 0 || options.region_y < 0 ||
+         options.region_width <= 0 || options.region_height <= 0)) {
+        std::fprintf(stderr,
+                     "--region needs non-negative x,y and positive w,h\n");
+        return 1;
+    }
     if (options.system_volume < 0.0f || options.system_volume > 4.0f) {
         std::fprintf(stderr, "--system-volume must be between 0 and 4\n");
         PrintUsage(stderr);
@@ -190,6 +241,13 @@ int main(int argc, char** argv) {
 
     hmmob::RecorderConfig config;
     config.display_index = options.display;
+    if (options.has_region) {
+        config.mode = hmmob::CaptureMode::Region;
+        config.region_x = options.region_x;
+        config.region_y = options.region_y;
+        config.region_width = options.region_width;
+        config.region_height = options.region_height;
+    }
     config.fps = options.fps;
     config.codec = options.codec;
     config.bitrate = options.bitrate;

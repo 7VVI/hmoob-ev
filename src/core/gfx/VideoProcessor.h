@@ -1,6 +1,7 @@
 #pragma once
 #include "core/gfx/D3D11Device.h"
 #include <d3d11.h>
+#include <windows.h>
 #include <wrl/client.h>
 
 namespace hmmob {
@@ -20,6 +21,11 @@ public:
     // output_texture(). The parameter is kept for API symmetry and may be
     // removed in Phase 1.
     [[nodiscard]] bool Convert(ID3D11Texture2D* input, ID3D11Texture2D* output);
+    // Converts the `source_rect` area of `input` (texture coordinates) into
+    // the whole output texture. The rectangle must be non-empty and lie
+    // inside the input texture.
+    [[nodiscard]] bool Convert(ID3D11Texture2D* input, ID3D11Texture2D* output,
+                               const RECT& source_rect);
     // HRESULT of the last failed Initialize(); S_OK when initialization
     // succeeded or has not been attempted yet.
     HRESULT last_error() const { return last_error_; }

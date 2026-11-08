@@ -42,6 +42,49 @@ TEST_CASE("Recorder treats an immediate stop as a clean recording",
 }
 
 // Requires an active display (D3D11 + DXGI + AMF), like the test above.
+TEST_CASE("Recorder records a region", "[integration]") {
+    const std::filesystem::path output =
+        std::filesystem::temp_directory_path() /
+        "hmmob-recorder-region-test.mp4";
+    std::error_code ec;
+    std::filesystem::remove(output, ec);
+
+    hmmob::Recorder recorder;
+    hmmob::RecorderConfig config;
+    config.mode = hmmob::CaptureMode::Region;
+    config.region_x = 100;
+    config.region_y = 100;
+    config.region_width = 320;
+    config.region_height = 180;
+    config.output_path = output.string();
+    config.duration_seconds = 2;
+    config.fps = 60;
+    config.codec = "hevc";
+
+    std::string error;
+    if (!recorder.Start(config, error)) {
+        SKIP("recorder unavailable: " + error);
+    }
+
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!recorder.Finished() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    REQUIRE(recorder.Finished());
+
+    REQUIRE(recorder.error().empty());
+    const hmmob::RecorderStats stats = recorder.stats();
+    REQUIRE(stats.display_width == 320);
+    REQUIRE(stats.display_height == 180);
+    REQUIRE(stats.encoded_frames >= 100);
+    REQUIRE(std::filesystem::exists(output));
+    REQUIRE(std::filesystem::file_size(output, ec) > 10 * 1024);
+
+    std::filesystem::remove(output, ec);
+}
+
+// Requires an active display (D3D11 + DXGI + AMF), like the test above.
 TEST_CASE("Recorder publishes preview frames", "[integration]") {
     const std::filesystem::path output =
         std::filesystem::temp_directory_path() /

@@ -8,26 +8,9 @@
 #include <vector>
 
 #include "core/preview/PreviewFrame.h"
+#include "core/recorder/RecorderConfig.h"
 
 namespace hmmob {
-
-struct RecorderConfig {
-    int display_index = 0;
-    int fps = 60;
-    std::string codec = "hevc";  // "hevc" or "h264"
-    int64_t bitrate = 50000000;
-    bool hdr = false;
-    bool system_audio = true;
-    bool microphone = true;
-    float system_gain = 1.0f;
-    float mic_gain = 1.0f;
-    std::string output_path;
-    // 0 = record until RequestStop(); > 0 = stop after this many seconds.
-    int duration_seconds = 0;
-    int preview_width = 640;
-    int preview_height = 360;
-    int preview_fps = 30;
-};
 
 struct RecorderStats {
     int64_t elapsed_us = 0;

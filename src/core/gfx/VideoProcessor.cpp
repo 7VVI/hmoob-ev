@@ -150,6 +150,18 @@ bool VideoProcessor::Initialize(D3D11Device& d3d, int input_width,
 }
 
 bool VideoProcessor::Convert(ID3D11Texture2D* input, ID3D11Texture2D* output) {
+    if (!input) {
+        return false;
+    }
+    D3D11_TEXTURE2D_DESC desc{};
+    input->GetDesc(&desc);
+    const RECT full{0, 0, static_cast<LONG>(desc.Width),
+                    static_cast<LONG>(desc.Height)};
+    return Convert(input, output, full);
+}
+
+bool VideoProcessor::Convert(ID3D11Texture2D* input, ID3D11Texture2D* output,
+                             const RECT& source_rect) {
     if (!ready_ || !processor_ || !video_device_ || !video_context_ || !enumerator_ ||
         !output_ || !output_view_ || !input || !output) {
         return false;
@@ -172,6 +184,14 @@ bool VideoProcessor::Convert(ID3D11Texture2D* input, ID3D11Texture2D* output) {
     if (src_desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM ||
         src_desc.Width != static_cast<UINT>(input_width_) ||
         src_desc.Height != static_cast<UINT>(input_height_)) {
+        return false;
+    }
+
+    if (source_rect.left < 0 || source_rect.top < 0 ||
+        source_rect.right <= source_rect.left ||
+        source_rect.bottom <= source_rect.top ||
+        source_rect.right > static_cast<LONG>(src_desc.Width) ||
+        source_rect.bottom > static_cast<LONG>(src_desc.Height)) {
         return false;
     }
 
@@ -200,6 +220,14 @@ bool VideoProcessor::Convert(ID3D11Texture2D* input, ID3D11Texture2D* output) {
     if (!input_view_) {
         return false;
     }
+
+    // Crop the requested area of the input into the whole output texture.
+    const RECT dest_rect{0, 0, static_cast<LONG>(output_width_),
+                         static_cast<LONG>(output_height_)};
+    video_context_->VideoProcessorSetStreamSourceRect(processor_.Get(), 0, TRUE,
+                                                      &source_rect);
+    video_context_->VideoProcessorSetStreamDestRect(processor_.Get(), 0, TRUE,
+                                                    &dest_rect);
 
     D3D11_VIDEO_PROCESSOR_STREAM stream{};
     stream.Enable = TRUE;
