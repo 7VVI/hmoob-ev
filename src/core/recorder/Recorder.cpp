@@ -12,6 +12,7 @@
 #include "core/audio/AacEncoder.h"
 #include "core/audio/AudioMixer.h"
 #include "core/audio/WasapiCapture.h"
+#include "core/capture/CameraSource.h"
 #include "core/capture/DesktopSource.h"
 #include "core/capture/VideoSource.h"
 #include "core/capture/WindowSource.h"
@@ -66,8 +67,9 @@ std::unique_ptr<VideoSource> CreateVideoSource(const RecorderConfig& config,
             }
             return std::make_unique<WindowSource>();
         case CaptureMode::Camera:
-            error = "camera capture is not implemented yet";
-            return nullptr;
+            // The source reports "no camera found" from Initialize when the
+            // machine has no capture device.
+            return std::make_unique<CameraSource>();
     }
     error = "unknown capture mode";
     return nullptr;

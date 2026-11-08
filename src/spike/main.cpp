@@ -12,6 +12,7 @@
 #include <thread>
 #include <vector>
 
+#include "core/capture/CameraSource.h"
 #include "core/recorder/Recorder.h"
 
 namespace {
@@ -28,6 +29,9 @@ struct Options {
     int region_width = 0;
     int region_height = 0;
     int window = 0;  // 1-based index into the enumerated window list
+    bool has_camera = false;
+    int camera = 0;
+    bool list_cameras = false;
     int bitrate = 50000000;
     bool hdr = false;
     bool audio = true;
@@ -49,6 +53,8 @@ void PrintUsage(std::FILE* stream) {
                  "  --display <n>           display index, >= 0 (default: 0)\n"
                  "  --region <x>,<y>,<w>,<h>  record one region of the display\n"
                  "  --window <n>            record the n-th listed visible top-level window\n"
+                 "  --camera <n>            record the n-th camera device (default: 0)\n"
+                 "  --list-cameras          list camera devices and exit\n"
                  "  --bitrate <bps>         target bitrate in bits/s, > 0 (default: 50000000)\n"
                  "  --hdr                   request HDR capture (tone mapped to SDR)\n"
                  "  --no-audio              disable all audio\n"
@@ -167,6 +173,15 @@ ParseResult Parse(int argc, char** argv, Options& options) {
                 std::fprintf(stderr, "invalid value for --window\n");
                 return ParseResult::Error;
             }
+        } else if (arg == "--camera") {
+            const char* v = next("--camera");
+            if (!v || !ParseInt(v, options.camera)) {
+                std::fprintf(stderr, "invalid value for --camera\n");
+                return ParseResult::Error;
+            }
+            options.has_camera = true;
+        } else if (arg == "--list-cameras") {
+            options.list_cameras = true;
         } else if (arg == "--bitrate") {
             const char* v = next("--bitrate");
             if (!v || !ParseInt(v, options.bitrate)) {
@@ -298,6 +313,19 @@ int main(int argc, char** argv) {
         PrintUsage(stderr);
         return 1;
     }
+    if (options.list_cameras) {
+        const std::vector<hmmob::CameraSource::CameraDeviceInfo> devices =
+            hmmob::CameraSource::EnumerateDevices();
+        if (devices.empty()) {
+            std::printf("no camera found\n");
+            return 0;
+        }
+        std::printf("cameras:\n");
+        for (size_t i = 0; i < devices.size(); ++i) {
+            std::printf("  [%zu] %s\n", i, devices[i].name.c_str());
+        }
+        return 0;
+    }
     if (options.codec != "hevc" && options.codec != "h264") {
         std::fprintf(stderr, "codec must be hevc or h264\n");
         return 1;
@@ -329,8 +357,17 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "--window must be non-negative\n");
         return 1;
     }
+    if (options.has_camera && options.camera < 0) {
+        std::fprintf(stderr, "--camera must be non-negative\n");
+        return 1;
+    }
     if (options.window > 0 && options.has_region) {
         std::fprintf(stderr, "--window cannot be combined with --region\n");
+        return 1;
+    }
+    if (options.has_camera && (options.window > 0 || options.has_region)) {
+        std::fprintf(stderr,
+                     "--camera cannot be combined with --window or --region\n");
         return 1;
     }
     if (options.system_volume < 0.0f || options.system_volume > 4.0f) {
@@ -346,7 +383,10 @@ int main(int argc, char** argv) {
 
     hmmob::RecorderConfig config;
     config.display_index = options.display;
-    if (options.window > 0) {
+    if (options.has_camera) {
+        config.mode = hmmob::CaptureMode::Camera;
+        config.camera_index = options.camera;
+    } else if (options.window > 0) {
         std::string select_error;
         const HWND window = SelectWindow(options.window, select_error);
         if (!window) {

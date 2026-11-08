@@ -24,6 +24,7 @@ add_library(hmmob_core STATIC
   src/core/capture/DxgiCapture.cpp
   src/core/capture/DesktopSource.cpp
   src/core/capture/WindowSource.cpp
+  src/core/capture/CameraSource.cpp
   src/core/gfx/VideoProcessor.cpp
   src/core/gfx/HdrToneMapper.cpp
   src/core/encoder/AmfEncoder.cpp
@@ -43,10 +44,11 @@ target_include_directories(hmmob_core PRIVATE
 # still propagates it as LINK_ONLY to consumers of this static library.
 # mmdevapi/ole32/avrt are WASAPI capture dependencies (avrt for MMCSS).
 # windowsapp is the Windows Runtime umbrella lib (RoInitialize, WinRT
-# activation used by WindowSource).
+# activation used by WindowSource). mfplat/mfreadwrite/mf/mfuuid are the Media
+# Foundation libraries used by CameraSource.
 target_link_libraries(hmmob_core
   PUBLIC d3d11 dxgi mmdevapi ole32 avrt ${FFMPEG_LIBRARIES}
-  PRIVATE d3dcompiler windowsapp)
+  PRIVATE d3dcompiler windowsapp mfplat mfreadwrite mf mfuuid)
 
 add_executable(evspike src/spike/main.cpp)
 target_include_directories(evspike SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
@@ -131,6 +133,7 @@ if(BUILD_TESTING)
     tests/test_wasapi_capture.cpp
     tests/test_desktop_preview.cpp
     tests/test_window_source.cpp
+    tests/test_camera_source.cpp
     tests/test_recorder.cpp
   )
   target_link_libraries(hmmob_tests PRIVATE hmmob_core Catch2::Catch2WithMain)
