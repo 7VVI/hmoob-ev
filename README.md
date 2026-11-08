@@ -14,7 +14,7 @@ Phase 0 核心管线（DXGI Desktop Duplication → D3D11 BGRA→NV12 → AMD AM
 
 ## Phase 1 音频状态
 
-WASAPI 系统声 Loopback + 麦克风采集、混音（增益/静音/软限幅）、AAC-LC 48 kHz 立体声编码与 MP4 音轨已实现并接入 `evspike`；`ctest` 81/81 通过（0 失败；无呈现桌面或无声输出时个别硬件用例跳过）。音视频同封装有自动化测试覆盖（`FFmpeg muxer writes HEVC+AAC MP4`）。
+WASAPI 系统声 Loopback + 麦克风采集、混音（增益/静音/软限幅）、AAC-LC 48 kHz 立体声编码与 MP4 音轨已实现并接入 `evspike`；`ctest` 84/84 通过（0 失败；无呈现桌面或无声输出时个别硬件用例跳过）。音视频同封装有自动化测试覆盖（`FFmpeg muxer writes HEVC+AAC MP4`）。
 
 端到端已验证：10 秒录制输出 2560×1440@60 HEVC + AAC 48 kHz 立体声 MP4，全片解码退出码 0，麦克风音轨为真实内容；系统无播放时 loopback 输出数字静音。详见 [`docs/phase1-audio-report.md`](docs/phase1-audio-report.md)。
 
@@ -48,6 +48,8 @@ $cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7
 ## 图形界面
 
 `hmmob_ev_app` 是录制窗口：上方为实时预览（640×360@30），下方可选择显示器、帧率、编码、码率、HDR 色调映射、系统声音/麦克风及增益和输出路径，并显示录制时长、帧数、fps 与音频统计。
+
+> 预览由 GPU 缩放到 640×360 后读回 CPU 绘制，用于确认画面与构图，不是最终的低延迟预览；录制画质与预览无关。停止后保存完成前请勿关闭进程。
 
 ```powershell
 .\build\release\Release\hmmob_ev_app.exe
