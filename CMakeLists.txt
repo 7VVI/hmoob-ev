@@ -30,6 +30,7 @@ add_library(hmmob_core STATIC
   src/core/audio/AudioMixer.cpp
   src/core/audio/AacEncoder.cpp
   src/core/audio/WasapiCapture.cpp
+  src/core/recorder/Recorder.cpp
 )
 target_include_directories(hmmob_core PUBLIC src)
 target_include_directories(hmmob_core SYSTEM PUBLIC ${FFMPEG_INCLUDE_DIRS})

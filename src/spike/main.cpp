@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -7,18 +6,8 @@
 #include <string>
 #include <system_error>
 #include <thread>
-#include <vector>
 
-#include "core/audio/AacEncoder.h"
-#include "core/audio/AudioMixer.h"
-#include "core/audio/WasapiCapture.h"
-#include "core/capture/DxgiCapture.h"
-#include "core/common/QpcClock.h"
-#include "core/encoder/AmfEncoder.h"
-#include "core/gfx/D3D11Device.h"
-#include "core/gfx/HdrToneMapper.h"
-#include "core/gfx/VideoProcessor.h"
-#include "core/mux/FfmpegMuxer.h"
+#include "core/recorder/Recorder.h"
 
 namespace {
 
@@ -199,368 +188,55 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    hmmob::D3D11Device d3d;
-    if (!d3d.Create()) {
-        std::fprintf(stderr, "failed to create d3d11 device\n");
+    hmmob::RecorderConfig config;
+    config.display_index = options.display;
+    config.fps = options.fps;
+    config.codec = options.codec;
+    config.bitrate = options.bitrate;
+    config.hdr = options.hdr;
+    config.system_audio = options.audio && options.system_audio;
+    config.microphone = options.audio && options.microphone;
+    config.system_gain = options.system_volume;
+    config.mic_gain = options.mic_volume;
+    config.output_path = options.output;
+    config.duration_seconds = options.seconds;
+
+    hmmob::Recorder recorder;
+    std::string error;
+    if (!recorder.Start(config, error)) {
+        std::fprintf(stderr, "%s\n", error.c_str());
         return 1;
     }
 
-    const auto displays = d3d.EnumerateDisplays();
-    if (displays.empty()) {
-        std::fprintf(stderr, "no display found\n");
-        return 1;
-    }
-    if (options.display >= static_cast<int>(displays.size())) {
-        std::fprintf(stderr, "display index out of range\n");
-        return 1;
-    }
-
-    hmmob::DxgiCapture capture;
-    if (!capture.Initialize(d3d, options.display, options.hdr)) {
-        std::fprintf(stderr, "failed to initialize dxgi capture\n");
-        return 1;
-    }
-    if (capture.hdr_downgraded()) {
-        std::fprintf(stderr,
-                     "warning: HDR capture was requested but the display is SDR; "
-                     "recording SDR\n");
-    }
-
-    const int width = capture.width();
-    const int height = capture.height();
-    const DXGI_FORMAT format = capture.format();
+    hmmob::RecorderStats stats = recorder.stats();
     std::printf("display=%d %dx%d format=%d fps=%d codec=%s bitrate=%d\n",
-                options.display, width, height, static_cast<int>(format),
-                options.fps, options.codec.c_str(), options.bitrate);
+                options.display, stats.display_width, stats.display_height,
+                stats.display_format, options.fps, options.codec.c_str(),
+                options.bitrate);
 
-    // PQ vs scRGB cannot be inferred from the surface format alone: HDR10
-    // streams PQ while scRGB (RGB_FULL_G10_NONE_P709) is already linear.
-    const bool hdr_display = hmmob::IsHdrColorSpace(capture.color_space());
-    const bool pq_mode =
-        capture.color_space() == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ||
-        capture.color_space() == DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020;
-    // Don't compile shaders or allocate a full-resolution render target when
-    // capture is SDR.
-    const bool tone_map_hdr = capture.hdr() && hdr_display;
-    hmmob::HdrToneMapper tone_mapper;
-    if (tone_map_hdr && !tone_mapper.Initialize(d3d, width, height, pq_mode)) {
-        std::fprintf(stderr, "failed to initialize HDR tone mapper\n");
-        return 1;
+    while (recorder.Running()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
-    hmmob::VideoProcessor converter;
-    if (!converter.Initialize(d3d, width, height)) {
-        std::fprintf(stderr, "failed to initialize video processor\n");
-        return 1;
-    }
-
-    hmmob::AmfEncoder encoder;
-    if (!encoder.Initialize(d3d.device(), options.codec, width, height,
-                            options.fps, options.bitrate)) {
-        std::fprintf(stderr, "failed to initialize AMF encoder\n");
-        return 1;
-    }
-
-    constexpr int kAudioSampleRate = 48000;
-    constexpr int kAudioChannels = 2;
-    constexpr int kAudioBitrate = 192000;
-
-    hmmob::WasapiCapture system_capture;
-    hmmob::WasapiCapture mic_capture;
-    bool audio_enabled = options.audio;
-    bool system_ok = false;
-    bool mic_ok = false;
-
-    if (audio_enabled && options.system_audio) {
-        system_ok = system_capture.Initialize(true, kAudioSampleRate, kAudioChannels) &&
-                    system_capture.Start();
-        if (!system_ok) {
-            std::fprintf(stderr, "warning: system audio unavailable (0x%08lx)\n",
-                         static_cast<unsigned long>(system_capture.last_error()));
-        }
-    }
-    if (audio_enabled && options.microphone) {
-        mic_ok = mic_capture.Initialize(false, kAudioSampleRate, kAudioChannels) &&
-                 mic_capture.Start();
-        if (!mic_ok) {
-            std::fprintf(stderr, "warning: microphone unavailable (0x%08lx)\n",
-                         static_cast<unsigned long>(mic_capture.last_error()));
-        }
-    }
-    audio_enabled = audio_enabled && (system_ok || mic_ok);
-
-    hmmob::AudioMixer audio_mixer(kAudioSampleRate, kAudioChannels);
-    if (system_ok) audio_mixer.SetSystemSource(system_capture.ring());
-    if (mic_ok) audio_mixer.SetMicSource(mic_capture.ring());
-    audio_mixer.SetSystemGain(options.system_volume);
-    audio_mixer.SetMicGain(options.mic_volume);
-
-    hmmob::AacEncoder aac;
-    if (audio_enabled &&
-        !aac.Initialize(kAudioSampleRate, kAudioChannels, kAudioBitrate)) {
-        std::fprintf(stderr, "warning: AAC encoder unavailable; recording video only\n");
-        audio_enabled = false;
-        system_capture.Stop();
-        mic_capture.Stop();
-        system_ok = mic_ok = false;
-        audio_mixer.SetSystemSource(nullptr);
-        audio_mixer.SetMicSource(nullptr);
-    }
-
-    hmmob::AudioConfig audio_config;
-    audio_config.enabled = audio_enabled;
-    if (audio_enabled) {
-        audio_config.sample_rate = aac.sample_rate();
-        audio_config.channels = aac.channels();
-        audio_config.bitrate = aac.bitrate();
-        audio_config.frame_size = aac.frame_size();
-        audio_config.initial_padding = aac.initial_padding_samples();
-        audio_config.extradata = aac.extradata();
-    }
-
-    hmmob::FfmpegMuxer muxer;
-    if (!muxer.Open(options.output, options.codec, width, height,
-                    options.fps, options.bitrate, audio_config)) {
-        std::fprintf(stderr, "failed to open output %s\n", options.output.c_str());
-        return 1;
-    }
-
-    // Both captures have been filling their rings while the microphone, the
-    // AAC encoder and the muxer were initialized. Drop that pre-roll so the
-    // track starts at frame 0 and both sources stay aligned with each other.
-    if (system_ok) system_capture.ring()->Clear();
-    if (mic_ok) mic_capture.ring()->Clear();
-    const bool audio_track = audio_enabled;
-
-    hmmob::QpcClock clock;
-    const int64_t start_us = clock.NowUs();
-    const int64_t frame_interval_us = 1'000'000 / options.fps;
-    int64_t next_deadline_us = start_us;
-    int acquired = 0;
-    int new_desktop_frames = 0;
-    int encoded_frames = 0;
-    int packets_written = 0;
-    int encode_errors = 0;
-    int64_t encoded_bytes = 0;
-    bool have_frame = false;
-    bool failed = false;
-    bool write_failed = false;
-
-    const auto on_packet = [&](const hmmob::AmfPacket& packet) {
-        if (!muxer.WritePacket(packet.data.data(), packet.data.size(),
-                               packet.pts_us, packet.keyframe)) {
-            write_failed = true;
-            return;
-        }
-        ++packets_written;
-        encoded_bytes += static_cast<int64_t>(packet.data.size());
-    };
-
-    int audio_packets = 0;
-    int64_t audio_bytes = 0;
-    int64_t audio_samples_written = 0;
-    bool audio_encode_failed = false;
-    std::vector<float> audio_buffer;
-    const auto on_audio_packet = [&](const hmmob::AacPacket& packet) {
-        const int64_t pts_us =
-            packet.pts_samples * 1'000'000 / kAudioSampleRate;
-        if (!muxer.WriteAudioPacket(packet.data.data(), packet.data.size(),
-                                    pts_us, packet.duration_samples)) {
-            write_failed = true;
-            return;
-        }
-        ++audio_packets;
-        audio_bytes += static_cast<int64_t>(packet.data.size());
-    };
-
-    while (clock.NowUs() - start_us <
-           static_cast<int64_t>(options.seconds) * 1'000'000) {
-        const int64_t now_us = clock.NowUs();
-        if (now_us < next_deadline_us) {
-            const int64_t sleep_us =
-                std::min<int64_t>(next_deadline_us - now_us, 1000);
-            std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
-            continue;
-        }
-        if (failed) {
-            break;
-        }
-
-        hmmob::CaptureFrame frame;
-        if (capture.Acquire(frame, 0)) {
-            if (frame.width != width || frame.height != height ||
-                frame.format != format) {
-                std::fprintf(stderr,
-                             "display mode changed: %dx%d fmt %d -> %dx%d fmt %d\n",
-                             width, height, static_cast<int>(format),
-                             frame.width, frame.height,
-                             static_cast<int>(frame.format));
-                failed = true;
-                break;
-            }
-            ID3D11Texture2D* source = frame.texture.Get();
-            if (tone_map_hdr) {
-                source = tone_mapper.Map(frame.texture.Get());
-                if (!source) {
-                    std::fprintf(stderr, "HDR tone mapping failed\n");
-                    failed = true;
-                    break;
-                }
-            } else if (frame.hdr) {
-                std::fprintf(stderr,
-                             "HDR capture format %d with SDR color space %d is "
-                             "not supported in Phase 0\n",
-                             static_cast<int>(frame.format),
-                             static_cast<int>(capture.color_space()));
-                failed = true;
-                break;
-            }
-            if (!converter.Convert(source, converter.output_texture())) {
-                std::fprintf(stderr, "color conversion failed\n");
-                failed = true;
-                break;
-            }
-            have_frame = true;
-            ++acquired;
-            if (frame.new_desktop) {
-                ++new_desktop_frames;
-            }
-        } else if (capture.failed()) {
-            std::fprintf(stderr, "capture failed: 0x%08lx\n",
-                         static_cast<unsigned long>(capture.last_error()));
-            if (capture.last_error() == DXGI_ERROR_DEVICE_REMOVED && d3d.device()) {
-                std::fprintf(stderr, "device removed reason: 0x%08lx\n",
-                             static_cast<unsigned long>(
-                                 d3d.device()->GetDeviceRemovedReason()));
-            }
-            failed = true;
-            break;
-        } else if (capture.access_lost()) {
-            std::fprintf(stderr, "capture access lost\n");
-            failed = true;
-            break;
-        }
-
-        if (have_frame) {
-            const int64_t pts_us =
-                static_cast<int64_t>(encoded_frames) * 1'000'000 / options.fps;
-            if (!encoder.Encode(converter.output_texture(), pts_us, on_packet)) {
-                std::fprintf(stderr, "encode failed at frame %d\n", encoded_frames);
-                ++encode_errors;
-                failed = true;
-                break;
-            }
-            if (write_failed) {
-                std::fprintf(stderr, "muxer write failed at frame %d\n",
-                             encoded_frames);
-                failed = true;
-                break;
-            }
-            if (audio_enabled) {
-                if (system_ok && system_capture.failed()) {
-                    std::fprintf(stderr, "system audio capture failed: 0x%08lx\n",
-                                 static_cast<unsigned long>(
-                                     system_capture.last_error()));
-                    system_capture.Stop();
-                    audio_mixer.SetSystemSource(nullptr);
-                    system_ok = false;
-                }
-                if (mic_ok && mic_capture.failed()) {
-                    std::fprintf(stderr, "microphone capture failed: 0x%08lx\n",
-                                 static_cast<unsigned long>(mic_capture.last_error()));
-                    mic_capture.Stop();
-                    audio_mixer.SetMicSource(nullptr);
-                    mic_ok = false;
-                }
-                if (!system_ok && !mic_ok) {
-                    std::fprintf(stderr,
-                                 "audio disabled for the remainder of the recording\n");
-                    audio_enabled = false;
-                }
-            }
-            if (audio_enabled) {
-                const int64_t target_samples =
-                    static_cast<int64_t>(encoded_frames + 1) *
-                    kAudioSampleRate / options.fps;
-                const int frames_to_mix =
-                    static_cast<int>(target_samples - audio_samples_written);
-                if (frames_to_mix > 0) {
-                    audio_buffer.resize(
-                        static_cast<size_t>(frames_to_mix) * kAudioChannels);
-                    audio_mixer.Mix(audio_buffer.data(), frames_to_mix);
-                    if (!aac.Encode(audio_buffer.data(), frames_to_mix,
-                                    on_audio_packet)) {
-                        std::fprintf(stderr, "audio encode failed at frame %d\n",
-                                     encoded_frames);
-                        audio_encode_failed = true;
-                        failed = true;
-                        break;
-                    }
-                    if (write_failed) {
-                        std::fprintf(stderr, "audio write failed at frame %d\n",
-                                     encoded_frames);
-                        failed = true;
-                        break;
-                    }
-                    audio_samples_written += frames_to_mix;
-                }
-            }
-            ++encoded_frames;
-        }
-
-        next_deadline_us += frame_interval_us;
-        const int64_t after_us = clock.NowUs();
-        if (after_us > next_deadline_us + frame_interval_us) {
-            // A short stall should not cause two frames back-to-back.
-            next_deadline_us = after_us + frame_interval_us;
-        }
-    }
-
-    system_capture.Stop();
-    mic_capture.Stop();
-
-    const int64_t target_frames =
-        static_cast<int64_t>(options.seconds) * options.fps;
-    if (static_cast<int64_t>(encoded_frames) * 100 < target_frames * 99) {
-        std::fprintf(stderr,
-                     "warning: achieved %d/%lld target frames; "
-                     "output duration is shorter than requested\n",
-                     encoded_frames, static_cast<long long>(target_frames));
-    }
-
-    if (write_failed) {
-        std::fprintf(stderr, "muxer write failed; skipping encoder flush\n");
-        failed = true;
-    } else if (!encoder.Flush(on_packet)) {
-        std::fprintf(stderr, "encoder flush failed\n");
-        failed = true;
-    } else if (write_failed) {
-        std::fprintf(stderr, "muxer write failed during encoder flush\n");
-        failed = true;
-    } else if (audio_track && !audio_encode_failed) {
-        // Flush even if both captures failed mid-recording: the AAC track was
-        // already declared in the header and must not end abruptly.
-        if (!aac.Flush(on_audio_packet)) {
-            std::fprintf(stderr, "AAC flush failed\n");
-            failed = true;
-        } else if (write_failed) {
-            std::fprintf(stderr, "muxer write failed during AAC flush\n");
-            failed = true;
-        }
-    }
-    if (!muxer.Close()) {
-        std::fprintf(stderr, "muxer close failed\n");
-        failed = true;
-    }
-
+    stats = recorder.stats();
     const double elapsed_s =
-        static_cast<double>(clock.NowUs() - start_us) / 1'000'000.0;
+        static_cast<double>(stats.elapsed_us) / 1'000'000.0;
+    const double avg_fps =
+        elapsed_s > 0.0 ? static_cast<double>(stats.encoded_frames) / elapsed_s
+                        : 0.0;
     std::printf("acquired=%d new_desktop=%d encoded=%d packets=%d bytes=%lld "
                 "encode_errors=%d audio_packets=%d audio_bytes=%lld "
                 "elapsed=%.2fs avg_fps=%.2f\n",
-                acquired, new_desktop_frames, encoded_frames, packets_written,
-                static_cast<long long>(encoded_bytes), encode_errors,
-                audio_packets, static_cast<long long>(audio_bytes),
-                elapsed_s, encoded_frames / elapsed_s);
-    return failed ? 1 : 0;
+                stats.acquired, stats.new_desktop_frames, stats.encoded_frames,
+                stats.packets_written,
+                static_cast<long long>(stats.encoded_bytes),
+                stats.encode_errors, stats.audio_packets,
+                static_cast<long long>(stats.audio_bytes), elapsed_s, avg_fps);
+
+    const std::string final_error = recorder.error();
+    if (!final_error.empty()) {
+        std::fprintf(stderr, "%s\n", final_error.c_str());
+        return 1;
+    }
+    return 0;
 }
