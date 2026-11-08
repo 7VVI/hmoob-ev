@@ -55,6 +55,7 @@
 #include "app/TitleBar.h"
 #include "app/UiFont.h"
 #include "app/WindowPickerDialog.h"
+#include "core/audio/WasapiCapture.h"
 #include "core/capture/CameraSource.h"
 #include "core/gfx/D3D11Device.h"
 
@@ -154,6 +155,7 @@ MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
     BuildUi();
     PopulateDisplays();
     PopulateCameras();
+    PopulateAudioDevices();
     ConnectSignals();
 
     const QRect available = screen()->availableGeometry();
@@ -357,7 +359,6 @@ QWidget* MainWindow::BuildAudioCard() {
         h->addSpacing(10);
 
         auto* device = new StyledComboBox(row);
-        device->addItem(QStringLiteral("默认设备"));
         device->setFixedHeight(36);
         h->addWidget(device, 1);
         h->addSpacing(10);
@@ -621,6 +622,35 @@ void MainWindow::PopulateCameras() {
     }
 }
 
+void MainWindow::PopulateAudioDevices() {
+    // The first item always selects the flow's default endpoint (empty id).
+    // Enumeration failures leave just that item, which keeps recording with
+    // shared-mode defaults working.
+    auto fill = [](StyledComboBox* combo, bool loopback) {
+        const QString previous = combo->currentData().toString();
+        const QSignalBlocker blocker(combo);
+        combo->clear();
+        combo->addItem(QStringLiteral("默认设备"), QString());
+        const std::vector<hmmob::WasapiCapture::AudioDeviceInfo> devices =
+            hmmob::WasapiCapture::EnumerateDevices(loopback);
+        for (const hmmob::WasapiCapture::AudioDeviceInfo& device : devices) {
+            QString name = QString::fromStdString(device.name);
+            if (device.is_default) {
+                name += QStringLiteral(" (默认)");
+            }
+            combo->addItem(name, QString::fromStdString(device.id));
+        }
+        if (!previous.isEmpty()) {
+            const int index = combo->findData(previous);
+            combo->setCurrentIndex(index >= 0 ? index : 0);
+        } else {
+            combo->setCurrentIndex(0);
+        }
+    };
+    fill(mic_device_combo_, false);
+    fill(system_device_combo_, true);
+}
+
 bool MainWindow::CanStart() const {
     // Window and camera capture do not depend on an attached display.
     return has_display_ || selected_mode_ >= 2;
@@ -669,6 +699,19 @@ void MainWindow::ConnectSignals() {
             this, [this](int index) {
                 if (index >= 0) {
                     SelectDisplay(resolution_combo_->itemData(index).toInt());
+                }
+            });
+    connect(codec_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                if (codec_combo_->currentData().toString() ==
+                        QStringLiteral("hevc") &&
+                    (container_ == QStringLiteral("avi") ||
+                     container_ == QStringLiteral("flv") ||
+                     container_ == QStringLiteral("wmv"))) {
+                    ShowStatus(
+                        QStringLiteral(
+                            "HEVC 不支持该保存格式，请改用 H.264 或更换格式"),
+                        true, 4000);
                 }
             });
     connect(mode_group_, &QButtonGroup::idClicked, this,
@@ -750,13 +793,38 @@ void MainWindow::OpenSettings() {
     if (recording_) {
         return;
     }
-    SettingsDialog dialog(bitrate_, hdr_, camera_index_, this);
+    const QString previous_container = container_;
+    SettingsDialog dialog(bitrate_, hdr_, camera_index_, container_,
+                          audio_codec_, audio_sample_rate_, audio_bitrate_,
+                          codec_combo_->currentData().toString(), this);
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
     bitrate_ = dialog.bitrate();
     hdr_ = dialog.hdr();
     camera_index_ = dialog.cameraIndex();
+    container_ = dialog.containerExtension();
+    audio_codec_ = dialog.audioCodec();
+    audio_sample_rate_ = dialog.audioSampleRate();
+    audio_bitrate_ = dialog.audioBitrate();
+
+    if (container_ == previous_container) {
+        return;
+    }
+    // Follow the format with our own generated path, keeping the timestamp
+    // base. A path the user typed or picked is left alone; Start validates the
+    // extension it actually carries.
+    if (output_edit_->text().trimmed() == auto_path_) {
+        const QFileInfo info(auto_path_);
+        auto_path_ = QDir(info.path())
+                         .filePath(info.completeBaseName() + QLatin1Char('.') +
+                                   container_);
+        output_edit_->setText(auto_path_);
+    } else {
+        ShowStatus(QStringLiteral("保存路径扩展名应与保存格式（.%1）一致")
+                       .arg(container_),
+                   false, 6000);
+    }
 }
 
 void MainWindow::ShowStatus(const QString& text, bool error, int timeout_ms) {
@@ -912,19 +980,51 @@ QString MainWindow::DefaultOutputPath() const {
     if (directory.isEmpty()) {
         directory = QDir::tempPath();
     }
-    const QString name = QStringLiteral("Hmmob-%1.mp4")
+    const QString name = QStringLiteral("Hmmob-%1.%2")
                              .arg(QDateTime::currentDateTime().toString(
-                                 QStringLiteral("yyyyMMdd-HHmmss")));
+                                      QStringLiteral("yyyyMMdd-HHmmss")),
+                                  container_);
     return QDir(directory).filePath(name);
 }
 
 void MainWindow::BrowseOutput() {
+    const QString filter =
+        QStringLiteral("%1 (*.%2)").arg(container_.toUpper(), container_);
     const QString path = QFileDialog::getSaveFileName(
-        this, QStringLiteral("选择输出文件"), output_edit_->text(),
-        QStringLiteral("MP4 (*.mp4)"));
+        this, QStringLiteral("选择输出文件"), output_edit_->text(), filter);
     if (!path.isEmpty()) {
         output_edit_->setText(path);
     }
+}
+
+QString MainWindow::RecordingCompatibilityError(const QString& path) const {
+    const QString extension = QFileInfo(path).suffix().toLower();
+    const bool known = extension == QStringLiteral("mp4") ||
+                       extension == QStringLiteral("mov") ||
+                       extension == QStringLiteral("mkv") ||
+                       extension == QStringLiteral("avi") ||
+                       extension == QStringLiteral("flv") ||
+                       extension == QStringLiteral("wmv");
+    if (!known) {
+        return QStringLiteral(
+            "不支持的保存格式，请使用 mp4/mov/mkv/avi/flv/wmv 扩展名");
+    }
+
+    const QString codec = codec_combo_->currentData().toString();
+    if (codec == QStringLiteral("hevc") &&
+        (extension == QStringLiteral("avi") ||
+         extension == QStringLiteral("flv") ||
+         extension == QStringLiteral("wmv"))) {
+        return QStringLiteral(
+                   "HEVC 不支持 %1 保存格式，请改用 H.264 或更换保存格式")
+            .arg(extension.toUpper());
+    }
+    if (extension == QStringLiteral("flv") &&
+        audio_codec_ == hmmob::AudioCodec::PcmS16Le) {
+        return QStringLiteral(
+            "FLV 保存格式不支持 PCM 音频，请改用 AAC 或更换保存格式");
+    }
+    return QString();
 }
 
 hmmob::RecorderConfig MainWindow::BuildConfig() const {
@@ -939,6 +1039,14 @@ hmmob::RecorderConfig MainWindow::BuildConfig() const {
     config.camera_index = camera_index_;
     config.system_audio = system_toggle_->isChecked();
     config.microphone = mic_toggle_->isChecked();
+    config.system_device_id = system_device_combo_->currentData()
+                                  .toString()
+                                  .toStdString();
+    config.mic_device_id =
+        mic_device_combo_->currentData().toString().toStdString();
+    config.audio_codec = audio_codec_;
+    config.audio_sample_rate = audio_sample_rate_;
+    config.audio_bitrate = audio_bitrate_;
     // Source levels are intentionally fixed at unity in this build; the
     // meters are decorative and never feed back into the recorder.
     config.system_gain = 1.0f;
@@ -971,6 +1079,11 @@ bool MainWindow::StartRecording() {
     }
 
     const QString path = output_edit_->text().trimmed();
+    const QString compatibility = RecordingCompatibilityError(path);
+    if (!compatibility.isEmpty()) {
+        SetError(compatibility);
+        return false;
+    }
     // Never destroy an existing file without asking. Smoke runs are scripted
     // and own their path, so they skip the prompt.
     if (!smoke_ && QFileInfo::exists(path)) {
@@ -1222,7 +1335,10 @@ void MainWindow::FinalizeRecording() {
         if (output_edit_->text().trimmed() == auto_path_) {
             QString next = DefaultOutputPath();
             if (next == output_path_) {
-                next = next.chopped(4) + QStringLiteral("-2.mp4");
+                const QFileInfo info(next);
+                next = QDir(info.path())
+                           .filePath(info.completeBaseName() +
+                                     QStringLiteral("-2.") + container_);
             }
             auto_path_ = next;
             output_edit_->setText(auto_path_);
@@ -1300,10 +1416,22 @@ void MainWindow::StartSmoke(int seconds, const QString& path,
     fps_combo_->setCurrentIndex(fps_combo_->findData(60));
     codec_combo_->setCurrentIndex(
         codec_combo_->findData(QStringLiteral("hevc")));
+    // Smoke runs are unattended and start before the settings dialog can be
+    // reached, so pin the documented defaults instead of inheriting anything.
     bitrate_ = 50000000;
     hdr_ = false;
+    container_ = QStringLiteral("mp4");
+    audio_codec_ = hmmob::AudioCodec::Aac;
+    audio_sample_rate_ = 48000;
+    audio_bitrate_ = 192000;
     system_toggle_->setChecked(true);
     mic_toggle_->setChecked(true);
+    {
+        const QSignalBlocker mic_blocker(mic_device_combo_);
+        const QSignalBlocker system_blocker(system_device_combo_);
+        mic_device_combo_->setCurrentIndex(0);
+        system_device_combo_->setCurrentIndex(0);
+    }
 
     int mode = 0;
     if (smoke_mode_ == QStringLiteral("region")) {

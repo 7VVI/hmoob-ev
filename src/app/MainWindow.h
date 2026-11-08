@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "app/IconRenderer.h"
+#include "core/audio/AudioCodec.h"
 #include "core/gfx/D3D11Device.h"
 #include "core/preview/DesktopPreview.h"
 #include "core/recorder/Recorder.h"
@@ -71,6 +72,7 @@ private:
                           QWidget* parent);
     void PopulateDisplays();
     void PopulateCameras();
+    void PopulateAudioDevices();
     void ConnectSignals();
 
     // Switches the four capture modes, keeping the nav tabs, mode tiles and
@@ -96,6 +98,7 @@ private:
 
     hmmob::RecorderConfig BuildConfig() const;
     QString DefaultOutputPath() const;
+    QString RecordingCompatibilityError(const QString& path) const;
     void BrowseOutput();
 
     void SetConfigEnabled(bool enabled);
@@ -143,6 +146,13 @@ private:
     bool hdr_ = false;
     int camera_index_ = 0;
     int camera_device_count_ = 0;
+    // Container extension ("mp4", "mov", ...) chosen in the settings dialog.
+    // The muxer picks the actual container from the output path; this value
+    // drives the auto-generated path and the compatibility checks.
+    QString container_ = QStringLiteral("mp4");
+    hmmob::AudioCodec audio_codec_ = hmmob::AudioCodec::Aac;
+    int audio_sample_rate_ = 48000;
+    int audio_bitrate_ = 192000;
 
     QLineEdit* output_edit_ = nullptr;
     QPushButton* browse_button_ = nullptr;
