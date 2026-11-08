@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QCoreApplication>
+#include <QFont>
 #include <QStringList>
 
 #include <cstdio>
@@ -20,6 +21,12 @@ void PrintSmokeUsage() {
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("Hmmob EV"));
+
+    QFont app_font;
+    app_font.setFamilies({QStringLiteral("Microsoft YaHei UI"),
+                          QStringLiteral("Microsoft YaHei")});
+    app_font.setPixelSize(14);
+    app.setFont(app_font);
 
     // Automated smoke mode: --smoke <seconds> <output path>. Malformed values
     // are a usage error (exit 2), not a reason to silently start the UI.

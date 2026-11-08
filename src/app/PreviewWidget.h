@@ -1,15 +1,15 @@
 #pragma once
 
 #include <QImage>
+#include <QString>
 #include <QWidget>
 #include <memory>
 
 #include "core/preview/PreviewFrame.h"
 
 // Shows the latest BGRA preview frame, published by the recorder while
-// recording or by the idle desktop preview otherwise, scaled to fit while
-// preserving the aspect ratio. No alpha blending: the frame format is BGRA8
-// but the A byte is ignored.
+// recording or by the idle desktop preview otherwise. The image is scaled to
+// cover the rounded card and clipped to it; the monitor badge is vector-drawn.
 class PreviewWidget : public QWidget {
     Q_OBJECT
 
@@ -20,6 +20,8 @@ public:
     // long as the QImage built over its pixels is in use.
     void SetFrame(std::shared_ptr<const hmmob::PreviewFrame> frame);
 
+    void SetBadgeText(const QString& text);
+
 protected:
     void paintEvent(QPaintEvent* event) override;
 
@@ -27,4 +29,5 @@ private:
     // Declared before image_ so the pixel buffer outlives the QImage.
     std::shared_ptr<const hmmob::PreviewFrame> frame_;
     QImage image_;
+    QString badge_text_ = QStringLiteral("预览区域 · 2560 × 1440");
 };

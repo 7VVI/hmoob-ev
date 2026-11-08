@@ -1,23 +1,34 @@
 #pragma once
 
 #include <QElapsedTimer>
+#include <QRect>
 #include <QString>
 #include <QWidget>
 #include <memory>
+#include <vector>
 
+#include "app/IconRenderer.h"
+#include "core/gfx/D3D11Device.h"
 #include "core/preview/DesktopPreview.h"
 #include "core/recorder/Recorder.h"
 
-class QCheckBox;
+class QAbstractButton;
 class QCloseEvent;
-class QComboBox;
-class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QResizeEvent;
 class QShowEvent;
 class QTimer;
+class QButtonGroup;
+class LevelMeter;
+class ModeTile;
+class NavTabButton;
 class PreviewWidget;
+class RecordButton;
+class StyledComboBox;
+class TitleBar;
+class ToggleCheckBox;
 
 class MainWindow : public QWidget {
     Q_OBJECT
@@ -34,11 +45,25 @@ public:
 protected:
     void closeEvent(QCloseEvent* event) override;
     void showEvent(QShowEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
+    bool nativeEvent(const QByteArray& eventType, void* message,
+                     qintptr* result) override;
 
 private:
     void BuildUi();
+    QWidget* BuildNavRow();
+    QWidget* BuildContentCard();
+    QWidget* BuildAudioCard();
+    QWidget* BuildVideoCard();
+    QWidget* BuildBottomBar();
+    QLabel* MakeIconLabel(Icon icon, int size, const QColor& color,
+                          QWidget* parent);
     void PopulateDisplays();
     void ConnectSignals();
+
+    void OnDisplaySelectionChanged();
+    void UpdateBadgeText();
+    void ShowStatus(const QString& text, bool error, bool transient);
 
     void StartIdlePreview();
     void Tick();
@@ -54,30 +79,53 @@ private:
 
     void SetConfigEnabled(bool enabled);
     void SetError(const QString& error);
-    void SetAudioLabel(const hmmob::RecorderStats& stats);
-    void UpdateStatsLabels(const hmmob::RecorderStats& stats, bool update_status);
+    void UpdateStatsLabels(const hmmob::RecorderStats& stats);
+    void UpdateAudioUi(bool microphone);
+    void SetAdvancedExpanded(bool expanded);
+
+    void ToggleMaximize();
+    void ApplyWindowEffects();
 
     hmmob::Recorder recorder_;
     hmmob::DesktopPreview preview_source_;
+    std::vector<hmmob::DisplayInfo> displays_;
 
+    TitleBar* title_bar_ = nullptr;
     PreviewWidget* preview_ = nullptr;
-    QComboBox* display_combo_ = nullptr;
-    QComboBox* fps_combo_ = nullptr;
-    QComboBox* codec_combo_ = nullptr;
-    QComboBox* bitrate_combo_ = nullptr;
-    QCheckBox* hdr_check_ = nullptr;
-    QCheckBox* system_audio_check_ = nullptr;
-    QDoubleSpinBox* system_gain_ = nullptr;
-    QCheckBox* mic_check_ = nullptr;
-    QDoubleSpinBox* mic_gain_ = nullptr;
+    NavTabButton* screen_tab_ = nullptr;
+    NavTabButton* window_tab_ = nullptr;
+    NavTabButton* region_tab_ = nullptr;
+    NavTabButton* camera_tab_ = nullptr;
+
+    QButtonGroup* mode_group_ = nullptr;
+    ModeTile* full_tile_ = nullptr;
+    int selected_mode_ = 0;
+
+    StyledComboBox* resolution_combo_ = nullptr;
+    StyledComboBox* display_combo_ = nullptr;
+    StyledComboBox* fps_combo_ = nullptr;
+    StyledComboBox* codec_combo_ = nullptr;
+    StyledComboBox* bitrate_combo_ = nullptr;
+    StyledComboBox* mic_device_combo_ = nullptr;
+    StyledComboBox* system_device_combo_ = nullptr;
+    QPushButton* mic_toggle_ = nullptr;
+    QPushButton* system_toggle_ = nullptr;
+    LevelMeter* mic_meter_ = nullptr;
+    LevelMeter* system_meter_ = nullptr;
+    ToggleCheckBox* hdr_check_ = nullptr;
+    QWidget* advanced_content_ = nullptr;
+    QWidget* display_row_ = nullptr;
+    QPushButton* advanced_button_ = nullptr;
+    QLabel* advanced_chevron_ = nullptr;
+
     QLineEdit* output_edit_ = nullptr;
     QPushButton* browse_button_ = nullptr;
-    QPushButton* start_button_ = nullptr;
-    QPushButton* stop_button_ = nullptr;
+    RecordButton* start_button_ = nullptr;
     QLabel* status_label_ = nullptr;
-    QLabel* audio_label_ = nullptr;
-    QLabel* error_label_ = nullptr;
+    QLabel* duration_label_ = nullptr;
+    QLabel* size_label_ = nullptr;
     QTimer* poll_timer_ = nullptr;
+    QTimer* status_timer_ = nullptr;
 
     bool has_display_ = false;
     bool preview_started_ = false;
@@ -87,7 +135,9 @@ private:
     bool recording_ = false;
     bool stop_requested_ = false;
     bool closing_ = false;
+    bool maximized_ = false;
     int tick_count_ = 0;
+    QRect normal_geometry_;
     QString output_path_;
     // Last path this window generated itself (as opposed to one the user
     // typed or picked). Decides whether the next run may regenerate a fresh

@@ -1,25 +1,27 @@
 #include "app/MainWindow.h"
 
 #include <QApplication>
-#include <QCheckBox>
+#include <QButtonGroup>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
-#include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <QFormLayout>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QResizeEvent>
+#include <QScreen>
 #include <QShowEvent>
+#include <QSignalBlocker>
 #include <QStandardPaths>
 #include <QStringConverter>
 #include <QTextStream>
@@ -29,68 +31,462 @@
 #include <cstdint>
 #include <utility>
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <dwmapi.h>
+#include <windows.h>
+#include <windowsx.h>
+
+#include "app/Controls.h"
+#include "app/IconRenderer.h"
+#include "app/LevelMeter.h"
+#include "app/ModeTile.h"
+#include "app/NavTabButton.h"
 #include "app/PreviewWidget.h"
+#include "app/TitleBar.h"
 #include "core/gfx/D3D11Device.h"
+
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+#ifndef DWMWCP_DONOTROUND
+#define DWMWCP_DONOTROUND 1
+#endif
+#ifndef DWMWCP_ROUND
+#define DWMWCP_ROUND 2
+#endif
 
 namespace {
 
-QString IdleStatusText() {
-    return QStringLiteral("已录 00:00.0 · 0 帧 · 0.0 fps");
-}
+constexpr int kRightColumnWidth = 480;
+constexpr int kBottomBarHeight = 100;
+constexpr int kStatusHeight = 18;
+constexpr int kWindowResizeBorder = 7;
+
+const char* const kStyleSheet = R"(
+QWidget#root { background: #F5F7FC; }
+QWidget#navBar { background: #F5F7FC; }
+QWidget#contentArea { background: transparent; }
+QWidget#bottomBar { background: #FAFBFD; border-top: 1px solid #EEF1F5; }
+QFrame#card { background: #FFFFFF; border: 1px solid #EDF0F5; border-radius: 12px; }
+QLabel { color: #1D2129; }
+QLabel#cardTitle { font-size: 16px; font-weight: 600; color: #1D2129; }
+QLabel#rowLabel { font-size: 14px; color: #1D2129; }
+QLabel#caption { font-size: 13px; color: #86909C; }
+QLabel#statValue { font-size: 16px; color: #1D2129; }
+QLabel#statusLabel { font-size: 13px; color: #86909C; }
+QPushButton#navAction { background: transparent; border: none; color: #4E5969; font-size: 15px; padding: 6px 8px; border-radius: 8px; }
+QPushButton#navAction:hover { background: #EDF2FA; }
+QPushButton#navAction:pressed { background: #E3EAF5; }
+QPushButton#sourceToggle { background: transparent; border: none; border-radius: 8px; }
+QPushButton#sourceToggle:hover { background: #EDF0F5; }
+QPushButton#iconButton { background: transparent; border: none; border-radius: 8px; }
+QPushButton#iconButton:hover { background: #EDF0F5; }
+QComboBox { background: #FFFFFF; border: 1px solid #E5E6EB; border-radius: 10px; padding: 0 10px 0 14px; font-size: 14px; color: #1D2129; }
+QComboBox:hover { border-color: #C9CDD4; }
+QComboBox:disabled { background: #F7F8FA; color: #A9AEB8; border-color: #EDF0F5; }
+QComboBox::drop-down { border: none; background: transparent; width: 34px; }
+QComboBox::down-arrow { image: none; width: 0px; height: 0px; }
+QComboBox QAbstractItemView { background: #FFFFFF; border: 1px solid #E5E6EB; border-radius: 8px; padding: 4px; outline: 0; selection-background-color: #EAF2FE; selection-color: #2F6BFF; }
+QComboBox QAbstractItemView::item { min-height: 30px; padding: 0 10px; }
+QFrame#pathBox { background: #F7F8FA; border: 1px solid #E5E6EB; border-radius: 10px; }
+QLineEdit#pathEdit { background: transparent; border: none; padding: 0px; font-size: 14px; color: #1D2129; selection-background-color: #2F6BFF; selection-color: #FFFFFF; }
+QLineEdit#pathEdit:disabled { color: #A9AEB8; }
+QPushButton#browseButton { background: transparent; border: none; border-radius: 8px; }
+QPushButton#browseButton:hover { background: #EDF0F5; }
+QWidget#advancedBar { background: #F7F9FC; border-top: 1px solid #F0F2F7; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; }
+QPushButton#advancedButton { background: transparent; border: none; border-radius: 0px; }
+QPushButton#advancedButton:hover { background: #F0F3F8; }
+QWidget#advancedContent { background: transparent; }
+)";
 
 QString PreviewUnavailableText(const std::string& error) {
     return QStringLiteral("预览不可用：%1").arg(QString::fromStdString(error));
 }
 
-QString FormatBytes(int64_t bytes) {
-    if (bytes < 1024) {
-        return QStringLiteral("%1 B").arg(bytes);
+QString FormatDuration(int64_t elapsed_us) {
+    const int64_t total_seconds = elapsed_us / 1000000;
+    const int64_t hours = total_seconds / 3600;
+    const int64_t minutes = (total_seconds / 60) % 60;
+    const int64_t seconds = total_seconds % 60;
+    return QStringLiteral("%1:%2:%3")
+        .arg(hours, 2, 10, QChar('0'))
+        .arg(minutes, 2, 10, QChar('0'))
+        .arg(seconds, 2, 10, QChar('0'));
+}
+
+QString FormatSize(int64_t bytes) {
+    if (bytes <= 0) {
+        return QStringLiteral("0 MB");
     }
-    if (bytes < 1024 * 1024) {
-        return QStringLiteral("%1 KiB").arg(bytes / 1024.0, 0, 'f', 1);
-    }
-    return QStringLiteral("%1 MiB").arg(bytes / (1024.0 * 1024.0), 0, 'f', 1);
+    const double mb = static_cast<double>(bytes) / (1024.0 * 1024.0);
+    return QStringLiteral("%1 MB").arg(mb, 0, 'f', 1);
+}
+
+QFont UiFont(int pixel_size, QFont::Weight weight = QFont::Normal) {
+    QFont font;
+    font.setFamilies({QStringLiteral("Microsoft YaHei UI"),
+                      QStringLiteral("Microsoft YaHei")});
+    font.setPixelSize(pixel_size);
+    font.setWeight(weight);
+    return font;
 }
 
 }  // namespace
 
 MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
+    setWindowTitle(QStringLiteral("Hmmob 录屏"));
+    setObjectName(QStringLiteral("root"));
+    setAttribute(Qt::WA_StyledBackground, true);
+    setWindowFlags(Qt::Window | Qt::FramelessWindowHint |
+                   Qt::WindowMinimizeButtonHint |
+                   Qt::WindowMaximizeButtonHint | Qt::WindowSystemMenuHint);
+    setStyleSheet(QString::fromUtf8(kStyleSheet));
+    resize(1400, 830);
+    setMinimumSize(1180, 720);
+
     BuildUi();
     PopulateDisplays();
     ConnectSignals();
+
+    const QRect available = screen()->availableGeometry();
+    move(available.center() -
+         QPoint(width() / 2, height() / 2));
+    normal_geometry_ = geometry();
 }
 
 MainWindow::~MainWindow() { preview_source_.Stop(); }
 
 void MainWindow::BuildUi() {
-    setWindowTitle(QStringLiteral("Hmmob EV 录制"));
-    resize(1000, 800);
-    setMinimumSize(900, 700);
-
     auto* root = new QVBoxLayout(this);
+    root->setContentsMargins(0, 0, 0, 0);
+    root->setSpacing(0);
 
-    preview_ = new PreviewWidget(this);
-    root->addWidget(preview_, 1);
+    title_bar_ = new TitleBar(this);
+    root->addWidget(title_bar_);
+    root->addWidget(BuildNavRow());
 
-    auto* form = new QFormLayout;
-    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    auto* content = new QWidget(this);
+    content->setObjectName(QStringLiteral("contentArea"));
+    auto* content_layout = new QHBoxLayout(content);
+    content_layout->setContentsMargins(26, 8, 26, 30);
+    content_layout->setSpacing(24);
 
-    display_combo_ = new QComboBox(this);
-    form->addRow(QStringLiteral("显示器"), display_combo_);
+    preview_ = new PreviewWidget(content);
+    content_layout->addWidget(preview_, 1);
 
-    fps_combo_ = new QComboBox(this);
-    fps_combo_->addItem(QStringLiteral("30"), 30);
-    fps_combo_->addItem(QStringLiteral("60"), 60);
-    fps_combo_->addItem(QStringLiteral("120"), 120);
+    auto* column = new QWidget(content);
+    column->setFixedWidth(kRightColumnWidth);
+    auto* column_layout = new QVBoxLayout(column);
+    column_layout->setContentsMargins(0, 0, 0, 0);
+    column_layout->setSpacing(12);
+    column_layout->addWidget(BuildContentCard(), 1);
+    column_layout->addWidget(BuildAudioCard(), 1);
+    column_layout->addWidget(BuildVideoCard(), 1);
+    content_layout->addWidget(column, 0);
+
+    root->addWidget(content, 1);
+    root->addWidget(BuildBottomBar());
+
+    status_label_ = new QLabel(this);
+    status_label_->setObjectName(QStringLiteral("statusLabel"));
+    status_label_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    status_label_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    status_label_->setText(QString());
+    status_label_->raise();
+
+    poll_timer_ = new QTimer(this);
+    poll_timer_->setInterval(33);
+
+    status_timer_ = new QTimer(this);
+    status_timer_->setSingleShot(true);
+    status_timer_->setInterval(4000);
+}
+
+QLabel* MainWindow::MakeIconLabel(Icon icon, int size, const QColor& color,
+                                  QWidget* parent) {
+    auto* label = new QLabel(parent);
+    label->setPixmap(IconRenderer::Pixmap(icon, size, color));
+    label->setFixedSize(size, size);
+    label->setAlignment(Qt::AlignCenter);
+    return label;
+}
+
+QWidget* MainWindow::BuildNavRow() {
+    auto* nav = new QWidget(this);
+    nav->setObjectName(QStringLiteral("navBar"));
+    nav->setAttribute(Qt::WA_StyledBackground, true);
+    nav->setFixedHeight(72);
+
+    auto* layout = new QHBoxLayout(nav);
+    layout->setContentsMargins(34, 0, 26, 0);
+    layout->setSpacing(12);
+
+    screen_tab_ = new NavTabButton(Icon::Monitor, QStringLiteral("屏幕录制"), nav);
+    window_tab_ = new NavTabButton(Icon::Window, QStringLiteral("窗口录制"), nav);
+    region_tab_ = new NavTabButton(Icon::Region, QStringLiteral("区域录制"), nav);
+    camera_tab_ = new NavTabButton(Icon::Camera, QStringLiteral("摄像头"), nav);
+    screen_tab_->SetActive(true);
+    layout->addWidget(screen_tab_);
+    layout->addWidget(window_tab_);
+    layout->addWidget(region_tab_);
+    layout->addWidget(camera_tab_);
+    layout->addStretch(1);
+
+    auto make_action = [&](Icon icon, const QString& text) {
+        auto* button = new QPushButton(text, nav);
+        button->setObjectName(QStringLiteral("navAction"));
+        button->setCursor(Qt::PointingHandCursor);
+        button->setFocusPolicy(Qt::NoFocus);
+        button->setIcon(
+            IconRenderer::QIconFor(icon, 22, QColor(0x4E, 0x59, 0x69)));
+        button->setIconSize(QSize(22, 22));
+        QFont font = button->font();
+        font.setPixelSize(15);
+        button->setFont(font);
+        return button;
+    };
+    auto* settings = make_action(Icon::Gear, QStringLiteral("设置"));
+    auto* open_files = make_action(Icon::Folder, QStringLiteral("打开文件"));
+    auto* menu = make_action(Icon::Menu, QString());
+    layout->addWidget(settings);
+    layout->addSpacing(16);
+    layout->addWidget(open_files);
+    layout->addSpacing(16);
+    layout->addWidget(menu);
+
+    connect(settings, &QPushButton::clicked, this, [this] {
+        ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, true);
+    });
+    connect(open_files, &QPushButton::clicked, this, [this] {
+        ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, true);
+    });
+    connect(menu, &QPushButton::clicked, this, [this] {
+        ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, true);
+    });
+
+    return nav;
+}
+
+QWidget* MainWindow::BuildContentCard() {
+    auto* card = new QFrame(this);
+    card->setObjectName(QStringLiteral("card"));
+    auto* layout = new QVBoxLayout(card);
+    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setSpacing(0);
+
+    auto* header = new QHBoxLayout;
+    header->setSpacing(8);
+    header->addWidget(
+        MakeIconLabel(Icon::Monitor, 20, QColor(0x1D, 0x21, 0x29), card));
+    auto* title = new QLabel(QStringLiteral("录制内容"), card);
+    title->setObjectName(QStringLiteral("cardTitle"));
+    header->addWidget(title);
+    header->addStretch(1);
+    layout->addLayout(header);
+    layout->addSpacing(8);
+
+    auto* row = new QHBoxLayout;
+    row->setSpacing(10);
+    mode_group_ = new QButtonGroup(this);
+    mode_group_->setExclusive(true);
+
+    full_tile_ = new ModeTile(Icon::Monitor, QStringLiteral("全屏"), card);
+    auto* region_tile = new ModeTile(Icon::Region, QStringLiteral("区域"), card);
+    auto* window_tile = new ModeTile(Icon::Window, QStringLiteral("窗口"), card);
+    auto* camera_tile = new ModeTile(Icon::Webcam, QStringLiteral("摄像头"), card);
+    mode_group_->addButton(full_tile_, 0);
+    mode_group_->addButton(region_tile, 1);
+    mode_group_->addButton(window_tile, 2);
+    mode_group_->addButton(camera_tile, 3);
+    full_tile_->setChecked(true);
+
+    row->addWidget(full_tile_, 1, Qt::AlignVCenter);
+    row->addWidget(region_tile, 1, Qt::AlignVCenter);
+    row->addWidget(window_tile, 1, Qt::AlignVCenter);
+    row->addWidget(camera_tile, 1, Qt::AlignVCenter);
+    layout->addLayout(row, 1);
+
+    return card;
+}
+
+QWidget* MainWindow::BuildAudioCard() {
+    auto* card = new QFrame(this);
+    card->setObjectName(QStringLiteral("card"));
+    auto* layout = new QVBoxLayout(card);
+    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setSpacing(0);
+
+    auto* header = new QHBoxLayout;
+    header->setSpacing(8);
+    header->addWidget(
+        MakeIconLabel(Icon::Speaker, 20, QColor(0x1D, 0x21, 0x29), card));
+    auto* title = new QLabel(QStringLiteral("音频设置"), card);
+    title->setObjectName(QStringLiteral("cardTitle"));
+    header->addWidget(title);
+    header->addStretch(1);
+    layout->addLayout(header);
+    layout->addSpacing(6);
+
+    auto build_row = [&](bool microphone) {
+        auto* row = new QWidget(card);
+        auto* h = new QHBoxLayout(row);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(0);
+        h->addWidget(MakeIconLabel(microphone ? Icon::Mic : Icon::Speaker, 20,
+                                   QColor(0x4E, 0x59, 0x69), row));
+        h->addSpacing(10);
+        auto* label = new QLabel(
+            microphone ? QStringLiteral("麦克风") : QStringLiteral("系统声音"),
+            row);
+        label->setObjectName(QStringLiteral("rowLabel"));
+        label->setFixedWidth(64);
+        h->addWidget(label);
+        h->addSpacing(10);
+
+        auto* device = new StyledComboBox(row);
+        device->addItem(QStringLiteral("默认设备"));
+        device->setFixedHeight(36);
+        h->addWidget(device, 1);
+        h->addSpacing(10);
+
+        auto* meter = new LevelMeter(microphone ? 1 : 3, row);
+        h->addWidget(meter, 0, Qt::AlignVCenter);
+        h->addSpacing(8);
+
+        auto* toggle = new QPushButton(row);
+        toggle->setObjectName(QStringLiteral("sourceToggle"));
+        toggle->setCheckable(true);
+        toggle->setChecked(true);
+        toggle->setCursor(Qt::PointingHandCursor);
+        toggle->setFocusPolicy(Qt::NoFocus);
+        toggle->setFixedSize(32, 32);
+        toggle->setIconSize(QSize(22, 22));
+        h->addWidget(toggle, 0, Qt::AlignVCenter);
+
+        if (microphone) {
+            mic_device_combo_ = device;
+            mic_meter_ = meter;
+            mic_toggle_ = toggle;
+        } else {
+            system_device_combo_ = device;
+            system_meter_ = meter;
+            system_toggle_ = toggle;
+        }
+        connect(toggle, &QPushButton::toggled, this,
+                [this, microphone] { UpdateAudioUi(microphone); });
+        return row;
+    };
+
+    auto* rows = new QVBoxLayout;
+    rows->setSpacing(6);
+    rows->addWidget(build_row(true));
+    rows->addWidget(build_row(false));
+    layout->addStretch(1);
+    layout->addLayout(rows);
+    layout->addStretch(1);
+
+    UpdateAudioUi(true);
+    UpdateAudioUi(false);
+    return card;
+}
+
+QWidget* MainWindow::BuildVideoCard() {
+    auto* card = new QFrame(this);
+    card->setObjectName(QStringLiteral("card"));
+    auto* card_layout = new QVBoxLayout(card);
+    card_layout->setContentsMargins(1, 1, 1, 1);
+    card_layout->setSpacing(0);
+
+    auto* body = new QWidget(card);
+    auto* layout = new QVBoxLayout(body);
+    layout->setContentsMargins(15, 15, 15, 6);
+    layout->setSpacing(0);
+
+    auto* header = new QHBoxLayout;
+    header->setSpacing(8);
+    header->addWidget(
+        MakeIconLabel(Icon::Gear, 20, QColor(0x1D, 0x21, 0x29), body));
+    auto* title = new QLabel(QStringLiteral("视频设置"), body);
+    title->setObjectName(QStringLiteral("cardTitle"));
+    header->addWidget(title);
+    header->addStretch(1);
+    layout->addLayout(header);
+    layout->addSpacing(8);
+
+    auto* row1 = new QHBoxLayout;
+    row1->setSpacing(0);
+    row1->addWidget(MakeIconLabel(Icon::Hd, 20, QColor(0x4E, 0x59, 0x69), body));
+    row1->addSpacing(8);
+    auto* resolution_label = new QLabel(QStringLiteral("分辨率"), body);
+    resolution_label->setObjectName(QStringLiteral("rowLabel"));
+    resolution_label->setFixedWidth(64);
+    row1->addWidget(resolution_label);
+    row1->addSpacing(10);
+    resolution_combo_ = new StyledComboBox(body);
+    resolution_combo_->setFixedHeight(36);
+    resolution_combo_->setFixedWidth(168);
+    row1->addWidget(resolution_combo_);
+    row1->addStretch(1);
+    auto* fps_label = new QLabel(QStringLiteral("帧率"), body);
+    fps_label->setObjectName(QStringLiteral("rowLabel"));
+    row1->addWidget(fps_label);
+    row1->addSpacing(8);
+    fps_combo_ = new StyledComboBox(body);
+    fps_combo_->setFixedHeight(36);
+    fps_combo_->setFixedWidth(108);
+    fps_combo_->addItem(QStringLiteral("30 fps"), 30);
+    fps_combo_->addItem(QStringLiteral("60 fps"), 60);
+    fps_combo_->addItem(QStringLiteral("120 fps"), 120);
     fps_combo_->setCurrentIndex(1);
-    form->addRow(QStringLiteral("帧率"), fps_combo_);
+    row1->addWidget(fps_combo_);
+    layout->addLayout(row1);
+    layout->addSpacing(6);
 
-    codec_combo_ = new QComboBox(this);
+    auto* row2 = new QHBoxLayout;
+    row2->setSpacing(0);
+    row2->addWidget(MakeIconLabel(Icon::Film, 20, QColor(0x4E, 0x59, 0x69), body));
+    row2->addSpacing(8);
+    auto* codec_label = new QLabel(QStringLiteral("编码格式"), body);
+    codec_label->setObjectName(QStringLiteral("rowLabel"));
+    codec_label->setFixedWidth(64);
+    row2->addWidget(codec_label);
+    row2->addSpacing(10);
+    codec_combo_ = new StyledComboBox(body);
+    codec_combo_->setFixedHeight(36);
+    codec_combo_->setFixedWidth(168);
     codec_combo_->addItem(QStringLiteral("HEVC"), QStringLiteral("hevc"));
     codec_combo_->addItem(QStringLiteral("H.264"), QStringLiteral("h264"));
-    form->addRow(QStringLiteral("编码"), codec_combo_);
+    row2->addWidget(codec_combo_);
+    row2->addSpacing(10);
+    auto* info = MakeIconLabel(Icon::Info, 18, QColor(0xB4, 0xBA, 0xC6), body);
+    info->setToolTip(QStringLiteral(
+        "HEVC 压缩效率更高、文件更小；H.264 兼容性更好。"));
+    row2->addWidget(info);
+    row2->addStretch(1);
+    layout->addLayout(row2);
+    layout->addSpacing(6);
 
-    bitrate_combo_ = new QComboBox(this);
+    advanced_content_ = new QWidget(body);
+    advanced_content_->setObjectName(QStringLiteral("advancedContent"));
+    auto* advanced_layout = new QVBoxLayout(advanced_content_);
+    advanced_layout->setContentsMargins(0, 4, 0, 2);
+    advanced_layout->setSpacing(6);
+
+    auto* bitrate_row = new QHBoxLayout;
+    bitrate_row->setSpacing(0);
+    auto* bitrate_label = new QLabel(QStringLiteral("码率"), advanced_content_);
+    bitrate_label->setObjectName(QStringLiteral("rowLabel"));
+    bitrate_label->setFixedWidth(64);
+    bitrate_row->addWidget(bitrate_label);
+    bitrate_row->addSpacing(10);
+    bitrate_combo_ = new StyledComboBox(advanced_content_);
+    bitrate_combo_->setFixedHeight(32);
+    bitrate_combo_->setFixedWidth(130);
     bitrate_combo_->addItem(QStringLiteral("20 Mbps"),
                             QVariant::fromValue<qlonglong>(20000000));
     bitrate_combo_->addItem(QStringLiteral("50 Mbps"),
@@ -98,98 +494,328 @@ void MainWindow::BuildUi() {
     bitrate_combo_->addItem(QStringLiteral("100 Mbps"),
                             QVariant::fromValue<qlonglong>(100000000));
     bitrate_combo_->setCurrentIndex(1);
-    form->addRow(QStringLiteral("码率"), bitrate_combo_);
+    bitrate_row->addWidget(bitrate_combo_);
+    bitrate_row->addStretch(1);
+    advanced_layout->addLayout(bitrate_row);
 
-    hdr_check_ = new QCheckBox(QStringLiteral("HDR（色调映射为 SDR）"), this);
-    form->addRow(QString(), hdr_check_);
+    hdr_check_ = new ToggleCheckBox(
+        QStringLiteral("HDR（色调映射为 SDR）"), advanced_content_);
+    hdr_check_->setChecked(false);
+    advanced_layout->addWidget(hdr_check_);
 
-    auto* system_row = new QHBoxLayout;
-    system_audio_check_ = new QCheckBox(QStringLiteral("系统声音"), this);
-    system_audio_check_->setChecked(true);
-    system_gain_ = new QDoubleSpinBox(this);
-    system_gain_->setRange(0.0, 4.0);
-    system_gain_->setSingleStep(0.1);
-    system_gain_->setDecimals(1);
-    system_gain_->setValue(1.0);
-    system_row->addWidget(system_audio_check_);
-    system_row->addWidget(new QLabel(QStringLiteral("增益"), this));
-    system_row->addWidget(system_gain_);
-    system_row->addStretch(1);
-    form->addRow(QStringLiteral("系统音频"), system_row);
+    display_row_ = new QWidget(advanced_content_);
+    auto* display_layout = new QHBoxLayout(display_row_);
+    display_layout->setContentsMargins(0, 0, 0, 0);
+    display_layout->setSpacing(0);
+    auto* display_label = new QLabel(QStringLiteral("显示器"), display_row_);
+    display_label->setObjectName(QStringLiteral("rowLabel"));
+    display_label->setFixedWidth(64);
+    display_layout->addWidget(display_label);
+    display_layout->addSpacing(10);
+    display_combo_ = new StyledComboBox(display_row_);
+    display_combo_->setFixedHeight(32);
+    display_combo_->setMinimumWidth(150);
+    display_layout->addWidget(display_combo_, 1);
+    display_row_->setVisible(false);
+    advanced_layout->addWidget(display_row_);
 
-    auto* mic_row = new QHBoxLayout;
-    mic_check_ = new QCheckBox(QStringLiteral("麦克风"), this);
-    mic_check_->setChecked(true);
-    mic_gain_ = new QDoubleSpinBox(this);
-    mic_gain_->setRange(0.0, 4.0);
-    mic_gain_->setSingleStep(0.1);
-    mic_gain_->setDecimals(1);
-    mic_gain_->setValue(1.0);
-    mic_row->addWidget(mic_check_);
-    mic_row->addWidget(new QLabel(QStringLiteral("增益"), this));
-    mic_row->addWidget(mic_gain_);
-    mic_row->addStretch(1);
-    form->addRow(QStringLiteral("麦克风"), mic_row);
+    advanced_content_->setVisible(false);
+    layout->addWidget(advanced_content_);
+    layout->addStretch(1);
 
-    auto* output_row = new QHBoxLayout;
-    auto_path_ = DefaultOutputPath();
-    output_edit_ = new QLineEdit(auto_path_, this);
+    card_layout->addWidget(body, 1);
+
+    auto* footer = new QWidget(card);
+    footer->setObjectName(QStringLiteral("advancedBar"));
+    footer->setAttribute(Qt::WA_StyledBackground, true);
+    footer->setFixedHeight(34);
+    auto* footer_layout = new QHBoxLayout(footer);
+    footer_layout->setContentsMargins(0, 0, 0, 0);
+    footer_layout->setSpacing(0);
+
+    advanced_button_ = new QPushButton(footer);
+    advanced_button_->setObjectName(QStringLiteral("advancedButton"));
+    advanced_button_->setCheckable(true);
+    advanced_button_->setCursor(Qt::PointingHandCursor);
+    advanced_button_->setFocusPolicy(Qt::NoFocus);
+    auto* button_layout = new QHBoxLayout(advanced_button_);
+    button_layout->setContentsMargins(14, 0, 14, 0);
+    button_layout->setSpacing(8);
+    advanced_chevron_ = new QLabel(advanced_button_);
+    advanced_chevron_->setPixmap(IconRenderer::Pixmap(
+        Icon::ChevronDown, 16, QColor(0x86, 0x90, 0x9C)));
+    advanced_chevron_->setFixedSize(16, 16);
+    button_layout->addWidget(advanced_chevron_);
+    auto* advanced_text = new QLabel(QStringLiteral("高级设置"),
+                                     advanced_button_);
+    advanced_text->setStyleSheet(
+        QStringLiteral("color:#86909C; font-size:13px;"));
+    button_layout->addWidget(advanced_text);
+    button_layout->addStretch(1);
+    footer_layout->addWidget(advanced_button_);
+    card_layout->addWidget(footer);
+
+    connect(advanced_button_, &QPushButton::toggled, this,
+            &MainWindow::SetAdvancedExpanded);
+
+    return card;
+}
+
+QWidget* MainWindow::BuildBottomBar() {
+    auto* bar = new QWidget(this);
+    bar->setObjectName(QStringLiteral("bottomBar"));
+    bar->setAttribute(Qt::WA_StyledBackground, true);
+    bar->setFixedHeight(kBottomBarHeight);
+
+    auto* layout = new QHBoxLayout(bar);
+    layout->setContentsMargins(34, 0, 26, 0);
+    layout->setSpacing(0);
+
+    layout->addWidget(
+        MakeIconLabel(Icon::Folder, 22, QColor(0x4E, 0x59, 0x69), bar));
+    layout->addSpacing(10);
+    auto* save_label = new QLabel(QStringLiteral("保存路径"), bar);
+    save_label->setStyleSheet(QStringLiteral("color:#4E5969; font-size:14px;"));
+    layout->addWidget(save_label);
+    layout->addSpacing(18);
+
+    auto* path_box = new QFrame(bar);
+    path_box->setObjectName(QStringLiteral("pathBox"));
+    path_box->setFixedHeight(44);
+    path_box->setMinimumWidth(280);
+    path_box->setMaximumWidth(560);
+    auto* path_layout = new QHBoxLayout(path_box);
+    path_layout->setContentsMargins(14, 0, 4, 0);
+    path_layout->setSpacing(0);
+    output_edit_ = new QLineEdit(path_box);
+    output_edit_->setObjectName(QStringLiteral("pathEdit"));
     output_edit_->setPlaceholderText(QStringLiteral("输出 MP4 路径"));
-    browse_button_ = new QPushButton(QStringLiteral("浏览…"), this);
-    output_row->addWidget(output_edit_, 1);
-    output_row->addWidget(browse_button_);
-    form->addRow(QStringLiteral("输出文件"), output_row);
+    auto_path_ = DefaultOutputPath();
+    output_edit_->setText(auto_path_);
+    output_edit_->setCursorPosition(0);
+    path_layout->addWidget(output_edit_, 1);
+    browse_button_ = new QPushButton(path_box);
+    browse_button_->setObjectName(QStringLiteral("browseButton"));
+    browse_button_->setCursor(Qt::PointingHandCursor);
+    browse_button_->setFocusPolicy(Qt::NoFocus);
+    browse_button_->setFixedSize(36, 36);
+    browse_button_->setIconSize(QSize(20, 20));
+    browse_button_->setIcon(
+        IconRenderer::QIconFor(Icon::Folder, 20, QColor(0x4E, 0x59, 0x69)));
+    browse_button_->setToolTip(QStringLiteral("选择保存位置"));
+    path_layout->addWidget(browse_button_);
+    layout->addWidget(path_box, 2);
+    layout->addSpacing(24);
 
-    root->addLayout(form);
+    auto make_divider = [&] {
+        auto* divider = new QWidget(bar);
+        divider->setFixedSize(1, 40);
+        divider->setStyleSheet(QStringLiteral("background:#E5E6EB;"));
+        return divider;
+    };
+    auto make_stat = [&](Icon icon, const QString& caption, QLabel** value) {
+        auto* block = new QWidget(bar);
+        auto* block_layout = new QHBoxLayout(block);
+        block_layout->setContentsMargins(0, 0, 0, 0);
+        block_layout->setSpacing(10);
+        block_layout->addWidget(
+            MakeIconLabel(icon, 22, QColor(0x86, 0x90, 0x9C), block),
+            0, Qt::AlignVCenter);
+        auto* text_layout = new QVBoxLayout;
+        text_layout->setContentsMargins(0, 0, 0, 0);
+        text_layout->setSpacing(1);
+        auto* caption_label = new QLabel(caption, block);
+        caption_label->setObjectName(QStringLiteral("caption"));
+        auto* value_label = new QLabel(block);
+        value_label->setObjectName(QStringLiteral("statValue"));
+        text_layout->addWidget(caption_label);
+        text_layout->addWidget(value_label);
+        block_layout->addLayout(text_layout);
+        *value = value_label;
+        return block;
+    };
 
-    auto* button_row = new QHBoxLayout;
-    start_button_ = new QPushButton(QStringLiteral("开始录制"), this);
-    stop_button_ = new QPushButton(QStringLiteral("停止"), this);
-    stop_button_->setEnabled(false);
-    button_row->addWidget(start_button_);
-    button_row->addWidget(stop_button_);
-    button_row->addStretch(1);
-    root->addLayout(button_row);
+    layout->addWidget(make_divider());
+    layout->addSpacing(20);
+    QLabel* duration_value = nullptr;
+    QLabel* size_value = nullptr;
+    layout->addWidget(make_stat(Icon::Clock, QStringLiteral("预计时长"),
+                                &duration_value));
+    duration_label_ = duration_value;
+    layout->addSpacing(20);
+    layout->addWidget(make_divider());
+    layout->addSpacing(20);
+    layout->addWidget(make_stat(Icon::File, QStringLiteral("预计大小"),
+                                &size_value));
+    size_label_ = size_value;
+    duration_label_->setText(QStringLiteral("00:00:00"));
+    size_label_->setText(QStringLiteral("0 MB"));
 
-    status_label_ = new QLabel(IdleStatusText(), this);
-    audio_label_ = new QLabel(QStringLiteral("音频 0 包 · 0 B"), this);
-    error_label_ = new QLabel(this);
-    error_label_->setStyleSheet(QStringLiteral("color: #c00000;"));
-    error_label_->setWordWrap(true);
-    error_label_->setVisible(false);
-    root->addWidget(status_label_);
-    root->addWidget(audio_label_);
-    root->addWidget(error_label_);
+    layout->addStretch(1);
 
-    poll_timer_ = new QTimer(this);
-    poll_timer_->setInterval(33);
+    start_button_ = new RecordButton(bar);
+    layout->addWidget(start_button_, 0, Qt::AlignVCenter);
+
+    return bar;
+}
+
+void MainWindow::PopulateDisplays() {
+    displays_.clear();
+    resolution_combo_->clear();
+    display_combo_->clear();
+
+    hmmob::D3D11Device device;
+    if (device.Create()) {
+        displays_ = device.EnumerateDisplays();
+    }
+    for (const hmmob::DisplayInfo& info : displays_) {
+        resolution_combo_->addItem(
+            QStringLiteral("%1 × %2").arg(info.width).arg(info.height),
+            info.index);
+        display_combo_->addItem(
+            QStringLiteral("显示器 %1 · %2 × %3")
+                .arg(info.index + 1)
+                .arg(info.width)
+                .arg(info.height),
+            info.index);
+    }
+    display_row_->setVisible(displays_.size() > 1);
+
+    if (displays_.empty()) {
+        resolution_combo_->addItem(QStringLiteral("无可用显示器"));
+        resolution_combo_->setEnabled(false);
+        start_button_->setEnabled(false);
+        has_display_ = false;
+        return;
+    }
+
+    resolution_combo_->setCurrentIndex(0);
+    display_combo_->setCurrentIndex(0);
+    has_display_ = true;
+    start_button_->setEnabled(true);
+    UpdateBadgeText();
 }
 
 void MainWindow::ConnectSignals() {
+    connect(title_bar_, &TitleBar::MinimizeRequested, this,
+            &QWidget::showMinimized);
+    connect(title_bar_, &TitleBar::MaximizeRequested, this,
+            &MainWindow::ToggleMaximize);
+    connect(title_bar_, &TitleBar::CloseRequested, this, &QWidget::close);
+
+    for (NavTabButton* tab : {window_tab_, region_tab_, camera_tab_}) {
+        connect(tab, &QAbstractButton::clicked, this, [this] {
+            ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, true);
+        });
+    }
+
     connect(browse_button_, &QPushButton::clicked, this,
             &MainWindow::BrowseOutput);
-    connect(start_button_, &QPushButton::clicked, this,
-            [this] { StartRecording(); });
-    connect(stop_button_, &QPushButton::clicked, this,
-            &MainWindow::StopRecording);
+    connect(start_button_, &QAbstractButton::clicked, this, [this] {
+        if (recording_) {
+            StopRecording();
+        } else {
+            StartRecording();
+        }
+    });
     connect(poll_timer_, &QTimer::timeout, this, &MainWindow::Tick);
-    connect(system_audio_check_, &QCheckBox::toggled, system_gain_,
-            &QWidget::setEnabled);
-    connect(mic_check_, &QCheckBox::toggled, mic_gain_, &QWidget::setEnabled);
+    connect(status_timer_, &QTimer::timeout, this, [this] {
+        if (!status_message_locked_) {
+            status_label_->clear();
+            status_label_->setStyleSheet(QString());
+        }
+    });
+    connect(resolution_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { OnDisplaySelectionChanged(); });
     connect(display_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int) {
-                if (!recording_) {
-                    // Stop() joins the preview thread, which can wait for one
-                    // short capture timeout.
-                    QApplication::setOverrideCursor(Qt::WaitCursor);
-                    StartIdlePreview();
-                    QApplication::restoreOverrideCursor();
-                }
-            });
+            this, [this](int) { OnDisplaySelectionChanged(); });
+    connect(mode_group_, &QButtonGroup::idClicked, this, [this](int id) {
+        selected_mode_ = id;
+    });
+}
+
+void MainWindow::UpdateAudioUi(bool microphone) {
+    QPushButton* toggle = microphone ? mic_toggle_ : system_toggle_;
+    LevelMeter* meter = microphone ? mic_meter_ : system_meter_;
+    if (!toggle || !meter) {
+        return;
+    }
+    const bool enabled = toggle->isChecked();
+    meter->SetActive(enabled);
+    toggle->setIcon(IconRenderer::QIconFor(
+        enabled ? Icon::Speaker : Icon::SpeakerMuted, 22,
+        enabled ? QColor(0x3A, 0x42, 0x54) : QColor(0xB4, 0xBA, 0xC6)));
+    toggle->setToolTip(enabled ? QStringLiteral("静音") : QStringLiteral("开启"));
+}
+
+void MainWindow::SetAdvancedExpanded(bool expanded) {
+    if (advanced_content_) {
+        advanced_content_->setVisible(expanded);
+    }
+    if (advanced_chevron_) {
+        advanced_chevron_->setPixmap(IconRenderer::Pixmap(
+            expanded ? Icon::ChevronUp : Icon::ChevronDown, 16,
+            QColor(0x86, 0x90, 0x9C)));
+    }
+}
+
+void MainWindow::ShowStatus(const QString& text, bool error, bool transient) {
+    // A message the user just triggered supersedes a locked recording result;
+    // otherwise the 4 s timer below could never clear it.
+    if (transient) {
+        status_message_locked_ = false;
+    }
+    status_label_->setText(text);
+    status_label_->setStyleSheet(
+        error ? QStringLiteral("color:#E5484D; font-size:13px;")
+              : QStringLiteral("color:#86909C; font-size:13px;"));
+    if (transient) {
+        status_timer_->start();
+    } else {
+        status_timer_->stop();
+    }
+}
+
+void MainWindow::OnDisplaySelectionChanged() {
+    const int index = resolution_combo_->currentData().toInt();
+    {
+        const QSignalBlocker blocker(display_combo_);
+        const int display_index = display_combo_->findData(index);
+        if (display_index >= 0) {
+            display_combo_->setCurrentIndex(display_index);
+        }
+    }
+    UpdateBadgeText();
+    if (!recording_) {
+        // Stop() joins the preview thread, which can wait for one short
+        // capture timeout.
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        StartIdlePreview();
+        QApplication::restoreOverrideCursor();
+    }
+}
+
+void MainWindow::UpdateBadgeText() {
+    const int index = resolution_combo_->currentData().toInt();
+    for (const hmmob::DisplayInfo& info : displays_) {
+        if (info.index == index) {
+            preview_->SetBadgeText(
+                QStringLiteral("预览区域 · %1 × %2")
+                    .arg(info.width)
+                    .arg(info.height));
+            return;
+        }
+    }
+    preview_->SetBadgeText(QStringLiteral("预览区域"));
 }
 
 void MainWindow::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
+    static bool effects_applied = false;
+    if (!effects_applied) {
+        effects_applied = true;
+        ApplyWindowEffects();
+    }
     if (preview_started_) {
         return;
     }
@@ -200,52 +826,33 @@ void MainWindow::showEvent(QShowEvent* event) {
     StartIdlePreview();
 }
 
+void MainWindow::resizeEvent(QResizeEvent* event) {
+    QWidget::resizeEvent(event);
+    if (status_label_) {
+        status_label_->setGeometry(
+            34, height() - kBottomBarHeight - 26, width() - 60, kStatusHeight);
+        status_label_->raise();
+    }
+}
+
 void MainWindow::StartIdlePreview() {
     if (!has_display_ || recording_) {
         return;
     }
     std::string error;
-    const int display_index = display_combo_->currentData().toInt();
+    const int display_index = resolution_combo_->currentData().toInt();
     if (!preview_source_.Start(display_index, 640, 360, 30, error)) {
         preview_->SetFrame(nullptr);
         last_preview_.reset();
         if (!status_message_locked_) {
-            status_label_->setText(PreviewUnavailableText(error));
+            ShowStatus(PreviewUnavailableText(error), true, false);
         }
         return;
     }
     if (!status_message_locked_ &&
         status_label_->text().startsWith(QStringLiteral("预览不可用："))) {
-        status_label_->setText(IdleStatusText());
+        ShowStatus(QString(), false, false);
     }
-}
-
-void MainWindow::PopulateDisplays() {
-    hmmob::D3D11Device device;
-    if (device.Create()) {
-        const std::vector<hmmob::DisplayInfo> displays =
-            device.EnumerateDisplays();
-        for (const hmmob::DisplayInfo& info : displays) {
-            display_combo_->addItem(
-                QStringLiteral("%1: %2x%3")
-                    .arg(info.index)
-                    .arg(info.width)
-                    .arg(info.height),
-                info.index);
-        }
-    }
-
-    if (display_combo_->count() == 0) {
-        display_combo_->addItem(QStringLiteral("无可用显示器"));
-        display_combo_->setEnabled(false);
-        start_button_->setEnabled(false);
-        has_display_ = false;
-        return;
-    }
-
-    display_combo_->setCurrentIndex(0);
-    has_display_ = true;
-    start_button_->setEnabled(true);
 }
 
 QString MainWindow::DefaultOutputPath() const {
@@ -254,7 +861,7 @@ QString MainWindow::DefaultOutputPath() const {
     if (directory.isEmpty()) {
         directory = QDir::tempPath();
     }
-    const QString name = QStringLiteral("hmmob-%1.mp4")
+    const QString name = QStringLiteral("Hmmob-%1.mp4")
                              .arg(QDateTime::currentDateTime().toString(
                                  QStringLiteral("yyyyMMdd-HHmmss")));
     return QDir(directory).filePath(name);
@@ -271,15 +878,17 @@ void MainWindow::BrowseOutput() {
 
 hmmob::RecorderConfig MainWindow::BuildConfig() const {
     hmmob::RecorderConfig config;
-    config.display_index = display_combo_->currentData().toInt();
+    config.display_index = resolution_combo_->currentData().toInt();
     config.fps = fps_combo_->currentData().toInt();
     config.codec = codec_combo_->currentData().toString().toStdString();
     config.bitrate = bitrate_combo_->currentData().toLongLong();
     config.hdr = hdr_check_->isChecked();
-    config.system_audio = system_audio_check_->isChecked();
-    config.microphone = mic_check_->isChecked();
-    config.system_gain = static_cast<float>(system_gain_->value());
-    config.mic_gain = static_cast<float>(mic_gain_->value());
+    config.system_audio = system_toggle_->isChecked();
+    config.microphone = mic_toggle_->isChecked();
+    // Source levels are intentionally fixed at unity in this build; the
+    // meters are decorative and never feed back into the recorder.
+    config.system_gain = 1.0f;
+    config.mic_gain = 1.0f;
     config.output_path = output_edit_->text().trimmed().toStdString();
     config.duration_seconds = 0;
     config.preview_width = 640;
@@ -290,6 +899,10 @@ hmmob::RecorderConfig MainWindow::BuildConfig() const {
 
 bool MainWindow::StartRecording() {
     if (recording_) {
+        return false;
+    }
+    if (selected_mode_ != 0) {
+        ShowStatus(QStringLiteral("该录制模式尚未实现"), false, true);
         return false;
     }
     if (!has_display_) {
@@ -306,7 +919,7 @@ bool MainWindow::StartRecording() {
     // and own their path, so they skip the prompt.
     if (!smoke_ && QFileInfo::exists(path)) {
         const QMessageBox::StandardButton answer = QMessageBox::question(
-            this, QStringLiteral("Hmmob EV 录制"),
+            this, QStringLiteral("Hmmob 录屏"),
             QStringLiteral("文件已存在，是否覆盖？\n%1")
                 .arg(QDir::toNativeSeparators(path)),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
@@ -337,6 +950,8 @@ bool MainWindow::StartRecording() {
     if (!started) {
         SetError(QString::fromStdString(error));
         SetConfigEnabled(true);
+        start_button_->SetRecording(false);
+        start_button_->setEnabled(has_display_);
         // Keep this failure visible; a preview-restart message must not
         // replace it.
         status_message_locked_ = true;
@@ -350,9 +965,12 @@ bool MainWindow::StartRecording() {
     stop_requested_ = false;
     tick_count_ = 0;
     SetConfigEnabled(false);
-    stop_button_->setEnabled(true);
-    SetAudioLabel(hmmob::RecorderStats{});
-    status_label_->setText(QStringLiteral("录制中…"));
+    start_button_->SetRecording(true);
+    start_button_->SetBusy(false);
+    start_button_->setEnabled(true);
+    duration_label_->setText(QStringLiteral("00:00:00"));
+    size_label_->setText(QStringLiteral("0 MB"));
+    ShowStatus(QStringLiteral("录制中…"), false, false);
     poll_timer_->start();
     return true;
 }
@@ -364,8 +982,9 @@ void MainWindow::StopRecording() {
     recorder_.RequestStop();
     stop_requested_ = true;
     save_watchdog_.start();
-    stop_button_->setEnabled(false);
-    status_label_->setText(QStringLiteral("正在保存…"));
+    start_button_->setEnabled(false);
+    start_button_->SetBusy(true);
+    ShowStatus(QStringLiteral("正在保存…"), false, false);
 }
 
 void MainWindow::Tick() {
@@ -383,14 +1002,13 @@ void MainWindow::Tick() {
             if (!preview_error.empty()) {
                 const QString message = PreviewUnavailableText(preview_error);
                 if (status_label_->text() != message) {
-                    status_label_->setText(message);
+                    ShowStatus(message, true, false);
                 }
             } else if (status_label_->text().startsWith(
                            QStringLiteral("预览不可用："))) {
-                status_label_->setText(IdleStatusText());
+                ShowStatus(QString(), false, false);
             }
         }
-        // Stats stay idle until recording starts.
         return;
     }
 
@@ -405,8 +1023,8 @@ void MainWindow::Tick() {
     // look like a hung window either. Keep the stopping state: only warn.
     if (stop_requested_ && !recorder_.Finished() &&
         save_watchdog_.isValid() && save_watchdog_.elapsed() >= 15000) {
-        status_label_->setText(
-            QStringLiteral("正在保存…（已超过 15 秒，仍在等待）"));
+        ShowStatus(QStringLiteral("正在保存…（已超过 15 秒，仍在等待）"), false,
+                   false);
     }
 
     if (++tick_count_ % 8 == 0) {
@@ -419,7 +1037,7 @@ void MainWindow::RefreshStats() {
         return;
     }
     const hmmob::RecorderStats stats = recorder_.stats();
-    UpdateStatsLabels(stats, !stop_requested_);
+    UpdateStatsLabels(stats);
     if (recorder_.Finished()) {
         FinalizeRecording();
     }
@@ -438,28 +1056,21 @@ void MainWindow::FinalizeRecording() {
     const QString error = QString::fromStdString(recorder_.error());
 
     SetConfigEnabled(true);
-    stop_button_->setEnabled(false);
-    UpdateStatsLabels(stats, true);
+    start_button_->SetRecording(false);
+    start_button_->SetBusy(false);
+    start_button_->setEnabled(has_display_);
+    UpdateStatsLabels(stats);
 
     if (!error.isEmpty()) {
         SetError(error);
-        status_label_->setText(QStringLiteral("保存失败"));
+        ShowStatus(QStringLiteral("保存失败：%1").arg(error), true, false);
     } else if (stats.encoded_frames == 0) {
         QFile::remove(output_path_);
         SetError(QString());
-        status_label_->setText(
-            QStringLiteral("未录制到画面，未生成文件"));
+        ShowStatus(QStringLiteral("未录制到画面，未生成文件"), false, false);
     } else {
         SetError(QString());
-        const double mib = static_cast<double>(stats.encoded_bytes) /
-                           (1024.0 * 1024.0);
-        const double seconds =
-            static_cast<double>(stats.elapsed_us) / 1000000.0;
-        status_label_->setText(
-            QStringLiteral("已保存：%1（%2 MiB，%3 s）")
-                .arg(output_path_)
-                .arg(mib, 0, 'f', 1)
-                .arg(seconds, 0, 'f', 2));
+        ShowStatus(QStringLiteral("已保存：%1").arg(output_path_), false, false);
 
         // The next run must not reuse the file that was just written. Only
         // rotate the name while the field still holds our own suggestion;
@@ -494,52 +1105,33 @@ void MainWindow::FinalizeRecording() {
 }
 
 void MainWindow::SetConfigEnabled(bool enabled) {
+    resolution_combo_->setEnabled(enabled && has_display_);
     display_combo_->setEnabled(enabled && has_display_);
     fps_combo_->setEnabled(enabled);
     codec_combo_->setEnabled(enabled);
     bitrate_combo_->setEnabled(enabled);
     hdr_check_->setEnabled(enabled);
-    system_audio_check_->setEnabled(enabled);
-    mic_check_->setEnabled(enabled);
-    system_gain_->setEnabled(enabled && system_audio_check_->isChecked());
-    mic_gain_->setEnabled(enabled && mic_check_->isChecked());
+    mic_toggle_->setEnabled(enabled);
+    system_toggle_->setEnabled(enabled);
+    mic_device_combo_->setEnabled(enabled);
+    system_device_combo_->setEnabled(enabled);
     output_edit_->setEnabled(enabled);
     browse_button_->setEnabled(enabled);
-    start_button_->setEnabled(enabled && has_display_);
+    for (QAbstractButton* button : mode_group_->buttons()) {
+        button->setEnabled(enabled);
+    }
 }
 
 void MainWindow::SetError(const QString& error) {
     last_error_ = error;
-    error_label_->setText(error);
-    error_label_->setVisible(!error.isEmpty());
-}
-
-void MainWindow::SetAudioLabel(const hmmob::RecorderStats& stats) {
-    audio_label_->setText(QStringLiteral("音频 %1 包 · %2")
-                              .arg(stats.audio_packets)
-                              .arg(FormatBytes(stats.audio_bytes)));
-}
-
-void MainWindow::UpdateStatsLabels(const hmmob::RecorderStats& stats,
-                                   bool update_status) {
-    if (update_status) {
-        const int64_t total_ms = stats.elapsed_us / 1000;
-        const int64_t minutes = total_ms / 60000;
-        const int64_t seconds = (total_ms % 60000) / 1000;
-        const int64_t tenths = (total_ms % 1000) / 100;
-        const double fps = stats.elapsed_us > 0
-                               ? static_cast<double>(stats.encoded_frames) *
-                                     1000000.0 / static_cast<double>(stats.elapsed_us)
-                               : 0.0;
-        status_label_->setText(
-            QStringLiteral("已录 %1:%2.%3 · %4 帧 · %5 fps")
-                .arg(minutes, 2, 10, QChar('0'))
-                .arg(seconds, 2, 10, QChar('0'))
-                .arg(tenths)
-                .arg(stats.encoded_frames)
-                .arg(fps, 0, 'f', 1));
+    if (!error.isEmpty()) {
+        ShowStatus(error, true, false);
     }
-    SetAudioLabel(stats);
+}
+
+void MainWindow::UpdateStatsLabels(const hmmob::RecorderStats& stats) {
+    duration_label_->setText(FormatDuration(stats.elapsed_us));
+    size_label_->setText(FormatSize(stats.encoded_bytes));
 }
 
 void MainWindow::StartSmoke(int seconds, const QString& path) {
@@ -549,17 +1141,17 @@ void MainWindow::StartSmoke(int seconds, const QString& path) {
     smoke_path_ = path;
     output_edit_->setText(path);
 
-    display_combo_->setCurrentIndex(0);
+    resolution_combo_->setCurrentIndex(0);
     fps_combo_->setCurrentIndex(fps_combo_->findData(60));
     codec_combo_->setCurrentIndex(
         codec_combo_->findData(QStringLiteral("hevc")));
     bitrate_combo_->setCurrentIndex(
         bitrate_combo_->findData(QVariant::fromValue<qlonglong>(50000000)));
     hdr_check_->setChecked(false);
-    system_audio_check_->setChecked(true);
-    mic_check_->setChecked(true);
-    system_gain_->setValue(1.0);
-    mic_gain_->setValue(1.0);
+    system_toggle_->setChecked(true);
+    mic_toggle_->setChecked(true);
+    full_tile_->setChecked(true);
+    selected_mode_ = 0;
 
     // A hung smoke run must still terminate with a diagnosable result instead
     // of leaving a window behind for the automation to time out on. The
@@ -613,6 +1205,101 @@ void MainWindow::FinishSmoke(const hmmob::RecorderStats& stats,
     QCoreApplication::exit(success ? 0 : 1);
 }
 
+void MainWindow::ToggleMaximize() {
+    if (!maximized_) {
+        normal_geometry_ = geometry();
+        setGeometry(screen()->availableGeometry());
+        maximized_ = true;
+    } else {
+        setGeometry(normal_geometry_);
+        maximized_ = false;
+    }
+    title_bar_->SetMaximized(maximized_);
+    ApplyWindowEffects();
+}
+
+void MainWindow::ApplyWindowEffects() {
+#ifdef Q_OS_WIN
+    const HWND hwnd = reinterpret_cast<HWND>(winId());
+    if (!hwnd) {
+        return;
+    }
+    // A frameless QWidget is a WS_POPUP window, which Windows will not resize
+    // from WM_NCHITTEST alone. Give it a sizing frame but collapse the
+    // non-client area to zero (WM_NCCALCSIZE below), so the custom caption
+    // still covers the whole window while the native resize loop works.
+    static bool frame_prepared = false;
+    if (!frame_prepared) {
+        frame_prepared = true;
+        LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
+        style &= ~static_cast<LONG_PTR>(WS_CAPTION);
+        style |= WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU;
+        SetWindowLongPtr(hwnd, GWL_STYLE, style);
+        SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                         SWP_FRAMECHANGED);
+    }
+    const int preference = maximized_ ? DWMWCP_DONOTROUND : DWMWCP_ROUND;
+    DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &preference,
+                          sizeof(preference));
+    const BOOL dark = FALSE;
+    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark,
+                          sizeof(dark));
+#endif
+}
+
+bool MainWindow::nativeEvent(const QByteArray& eventType, void* message,
+                             qintptr* result) {
+#ifdef Q_OS_WIN
+    if (eventType == "windows_generic_MSG") {
+        auto* msg = static_cast<MSG*>(message);
+        if (msg->message == WM_NCCALCSIZE && msg->wParam == TRUE) {
+            // WS_THICKFRAME is only present to enable the native resize loop;
+            // the whole window rect must remain client area.
+            *result = 0;
+            return true;
+        }
+        if (msg->message == WM_NCHITTEST && !maximized_) {
+            const HWND hwnd = reinterpret_cast<HWND>(winId());
+            RECT window_rect{};
+            GetWindowRect(hwnd, &window_rect);
+            const int x = GET_X_LPARAM(msg->lParam);
+            const int y = GET_Y_LPARAM(msg->lParam);
+            const int border = kWindowResizeBorder;
+            const bool left = x >= window_rect.left &&
+                              x < window_rect.left + border;
+            const bool right = x <= window_rect.right &&
+                               x > window_rect.right - border;
+            const bool top =
+                y >= window_rect.top && y < window_rect.top + border;
+            const bool bottom = y <= window_rect.bottom &&
+                                y > window_rect.bottom - border;
+            if (left || right || top || bottom) {
+                if (top && left) {
+                    *result = HTTOPLEFT;
+                } else if (top && right) {
+                    *result = HTTOPRIGHT;
+                } else if (bottom && left) {
+                    *result = HTBOTTOMLEFT;
+                } else if (bottom && right) {
+                    *result = HTBOTTOMRIGHT;
+                } else if (left) {
+                    *result = HTLEFT;
+                } else if (right) {
+                    *result = HTRIGHT;
+                } else if (top) {
+                    *result = HTTOP;
+                } else {
+                    *result = HTBOTTOM;
+                }
+                return true;
+            }
+        }
+    }
+#endif
+    return QWidget::nativeEvent(eventType, message, result);
+}
+
 void MainWindow::closeEvent(QCloseEvent* event) {
     if (closing_) {
         event->ignore();
@@ -628,13 +1315,13 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     // second confirmation dialog.
     closing_ = true;
     const QMessageBox::StandardButton answer = QMessageBox::question(
-        this, QStringLiteral("Hmmob EV 录制"),
+        this, QStringLiteral("Hmmob 录屏"),
         QStringLiteral("正在录制，确定停止并退出？"),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
     if (answer != QMessageBox::Yes) {
         closing_ = false;
         if (recording_) {
-            stop_button_->setEnabled(!stop_requested_);
+            start_button_->setEnabled(!stop_requested_);
             if (!poll_timer_->isActive()) {
                 poll_timer_->start();
             }
@@ -645,7 +1332,6 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 
     poll_timer_->stop();
     start_button_->setEnabled(false);
-    stop_button_->setEnabled(false);
     recorder_.RequestStop();
     QElapsedTimer timer;
     timer.start();

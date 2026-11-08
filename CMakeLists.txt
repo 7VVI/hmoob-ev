@@ -55,8 +55,14 @@ qt_standard_project_setup()
 qt_add_executable(hmmob_ev_app WIN32
   src/app/main.cpp
   src/app/MainWindow.cpp src/app/MainWindow.h
-  src/app/PreviewWidget.cpp src/app/PreviewWidget.h)
-target_link_libraries(hmmob_ev_app PRIVATE hmmob_core Qt6::Widgets)
+  src/app/PreviewWidget.cpp src/app/PreviewWidget.h
+  src/app/IconRenderer.cpp src/app/IconRenderer.h
+  src/app/LevelMeter.cpp src/app/LevelMeter.h
+  src/app/NavTabButton.cpp src/app/NavTabButton.h
+  src/app/ModeTile.cpp src/app/ModeTile.h
+  src/app/TitleBar.cpp src/app/TitleBar.h
+  src/app/Controls.cpp src/app/Controls.h)
+target_link_libraries(hmmob_ev_app PRIVATE hmmob_core Qt6::Widgets dwmapi)
 
 # vcpkg's applocal deployment only copies DLLs the exe imports directly; Qt
 # discovers plugins at run time, so the platform/style plugins must be copied

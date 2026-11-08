@@ -1,12 +1,25 @@
 #include "app/PreviewWidget.h"
 
 #include <QColor>
+#include <QFontMetrics>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPaintEvent>
 #include <utility>
 
+#include "app/IconRenderer.h"
+
+namespace {
+constexpr qreal kRadius = 14.0;
+constexpr qreal kBadgeMargin = 20.0;
+constexpr qreal kBadgeHeight = 40.0;
+constexpr qreal kBadgePadding = 16.0;
+constexpr qreal kBadgeIcon = 18.0;
+constexpr qreal kBadgeGap = 8.0;
+}  // namespace
+
 PreviewWidget::PreviewWidget(QWidget* parent) : QWidget(parent) {
-    setMinimumSize(560, 315);
+    setMinimumSize(420, 300);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     setAutoFillBackground(false);
 }
@@ -30,21 +43,71 @@ void PreviewWidget::SetFrame(std::shared_ptr<const hmmob::PreviewFrame> frame) {
     update();
 }
 
+void PreviewWidget::SetBadgeText(const QString& text) {
+    if (badge_text_ == text) {
+        return;
+    }
+    badge_text_ = text;
+    update();
+}
+
 void PreviewWidget::paintEvent(QPaintEvent* event) {
     (void)event;
     QPainter painter(this);
-    painter.fillRect(rect(), QColor(24, 24, 24));
+    painter.setRenderHint(QPainter::Antialiasing, true);
 
-    if (image_.isNull()) {
-        painter.setPen(QColor(160, 160, 160));
+    const QRectF card = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+    QPainterPath clip;
+    clip.addRoundedRect(card, kRadius, kRadius);
+    painter.setClipPath(clip);
+
+    painter.fillRect(rect(), QColor(0xEE, 0xF2, 0xF8));
+
+    if (!image_.isNull()) {
+        // Cover the card so the rounded preview is filled edge to edge, as in
+        // the reference design.
+        const QSizeF scaled = image_.size().scaled(
+            card.size().toSize(), Qt::KeepAspectRatioByExpanding);
+        const QRectF target(QPointF(card.center().x() - scaled.width() / 2.0,
+                                    card.center().y() - scaled.height() / 2.0),
+                            scaled);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        painter.drawImage(target, image_);
+    } else {
+        painter.setPen(QColor(0x9A, 0xA3, 0xB2));
+        QFont idle_font = font();
+        idle_font.setPixelSize(15);
+        painter.setFont(idle_font);
         painter.drawText(rect(), Qt::AlignCenter, QStringLiteral("预览未开始"));
-        return;
     }
 
-    const QSize target = image_.size().scaled(size(), Qt::KeepAspectRatio);
-    const QRect target_rect(QPoint((width() - target.width()) / 2,
-                                   (height() - target.height()) / 2),
-                            target);
-    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-    painter.drawImage(target_rect, image_);
+    // Badge: dark translucent pill with a monitor glyph.
+    QFont badge_font = font();
+    badge_font.setPixelSize(14);
+    badge_font.setWeight(QFont::Medium);
+    painter.setFont(badge_font);
+    const QFontMetrics metrics(badge_font);
+    const qreal text_width = metrics.horizontalAdvance(badge_text_);
+    const qreal badge_width =
+        kBadgePadding * 2 + kBadgeIcon + kBadgeGap + text_width;
+    const QRectF badge(kBadgeMargin, kBadgeMargin, badge_width, kBadgeHeight);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(0, 0, 0, 150));
+    painter.drawRoundedRect(badge, 8.0, 8.0);
+
+    const QRectF icon_rect(badge.left() + kBadgePadding,
+                           badge.center().y() - kBadgeIcon / 2.0, kBadgeIcon,
+                           kBadgeIcon);
+    IconRenderer::Paint(painter, Icon::Monitor, icon_rect, QColor(Qt::white),
+                        1.7);
+    painter.setPen(QColor(Qt::white));
+    painter.drawText(
+        QRectF(icon_rect.right() + kBadgeGap, badge.top(),
+               text_width + 2, badge.height()),
+        Qt::AlignLeft | Qt::AlignVCenter, badge_text_);
+
+    painter.setClipping(false);
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(QColor(0xE7, 0xEB, 0xF2), 1.0));
+    painter.drawRoundedRect(card, kRadius, kRadius);
 }
