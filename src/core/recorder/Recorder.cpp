@@ -65,7 +65,24 @@ struct Recorder::Impl {
     std::atomic<bool> running{false};
     std::atomic<bool> finished{false};
 
+    // Run state, written only by the recording thread and published to
+    // `stats` under the mutex. Kept here so the thread-level catch handler can
+    // publish the latest values if the pipeline throws.
+    int64_t start_us = 0;
+    int acquired = 0;
+    int new_desktop_frames = 0;
+    int encoded_frames = 0;
+    int packets_written = 0;
+    int encode_errors = 0;
+    int64_t encoded_bytes = 0;
+    int audio_packets = 0;
+    int64_t audio_bytes = 0;
+    int64_t target_frames = 0;
+    bool audio_track = false;
+
     void Run();
+    void PublishStats(int64_t now_us);
+    void ResetRunState();
 
     // Keeps the first failure: later cleanup failures are consequences of it.
     void RecordError(std::string message) {
@@ -75,11 +92,45 @@ struct Recorder::Impl {
         }
     }
 
+    bool HasError() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return !error.empty();
+    }
+
     void MarkFinished() {
         running.store(false);
         finished.store(true);
     }
 };
+
+void Recorder::Impl::ResetRunState() {
+    start_us = 0;
+    acquired = 0;
+    new_desktop_frames = 0;
+    encoded_frames = 0;
+    packets_written = 0;
+    encode_errors = 0;
+    encoded_bytes = 0;
+    audio_packets = 0;
+    audio_bytes = 0;
+    target_frames = 0;
+    audio_track = false;
+}
+
+void Recorder::Impl::PublishStats(int64_t now_us) {
+    std::lock_guard<std::mutex> lock(mutex);
+    stats.elapsed_us = start_us != 0 ? now_us - start_us : 0;
+    stats.acquired = acquired;
+    stats.new_desktop_frames = new_desktop_frames;
+    stats.encoded_frames = encoded_frames;
+    stats.packets_written = packets_written;
+    stats.encoded_bytes = encoded_bytes;
+    stats.encode_errors = encode_errors;
+    stats.audio_packets = audio_packets;
+    stats.audio_bytes = audio_bytes;
+    stats.target_frames = static_cast<int>(target_frames);
+    stats.audio_track = audio_track;
+}
 
 void Recorder::Impl::Run() {
     // The recording thread owns the D3D/WASAPI objects and needs COM for the
@@ -241,27 +292,18 @@ void Recorder::Impl::Run() {
     // track starts at frame 0 and both sources stay aligned with each other.
     if (system_ok) system_capture.ring()->Clear();
     if (mic_ok) mic_capture.ring()->Clear();
-    const bool audio_track = audio_enabled;
+    audio_track = audio_enabled;
 
     QpcClock clock;
-    const int64_t start_us = clock.NowUs();
+    start_us = clock.NowUs();
     const int64_t frame_interval_us = 1'000'000 / config.fps;
-    const int64_t target_frames =
-        static_cast<int64_t>(config.duration_seconds) * config.fps;
+    target_frames = static_cast<int64_t>(config.duration_seconds) * config.fps;
     int64_t next_deadline_us = start_us;
-    int acquired = 0;
-    int new_desktop_frames = 0;
-    int encoded_frames = 0;
-    int packets_written = 0;
-    int encode_errors = 0;
-    int64_t encoded_bytes = 0;
     bool have_frame = false;
-    bool failed = false;
     bool write_failed = false;
 
     const auto fail = [&](std::string message) {
         RecordError(std::move(message));
-        failed = true;
     };
 
     const auto on_packet = [&](const AmfPacket& packet) {
@@ -274,8 +316,6 @@ void Recorder::Impl::Run() {
         encoded_bytes += static_cast<int64_t>(packet.data.size());
     };
 
-    int audio_packets = 0;
-    int64_t audio_bytes = 0;
     int64_t audio_samples_written = 0;
     bool audio_encode_failed = false;
     std::vector<float> audio_buffer;
@@ -291,23 +331,9 @@ void Recorder::Impl::Run() {
         audio_bytes += static_cast<int64_t>(packet.data.size());
     };
 
-    // Published after every encoded frame so a UI polling stats() sees live
-    // time/frames/fps/audio. The display fields set during init are retained.
-    const auto publish_stats = [&] {
-        std::lock_guard<std::mutex> lock(mutex);
-        stats.elapsed_us = clock.NowUs() - start_us;
-        stats.acquired = acquired;
-        stats.new_desktop_frames = new_desktop_frames;
-        stats.encoded_frames = encoded_frames;
-        stats.packets_written = packets_written;
-        stats.encoded_bytes = encoded_bytes;
-        stats.encode_errors = encode_errors;
-        stats.audio_packets = audio_packets;
-        stats.audio_bytes = audio_bytes;
-        stats.target_frames = static_cast<int>(target_frames);
-        stats.audio_track = audio_track;
-    };
-
+    // Publish once before the loop so target_frames/audio_track (and
+    // elapsed=0) are visible as soon as the caller sees a running recorder.
+    PublishStats(start_us);
     running.store(true);
     init.Resolve(true);
 
@@ -329,10 +355,6 @@ void Recorder::Impl::Run() {
             std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
             continue;
         }
-        if (failed) {
-            break;
-        }
-
         CaptureFrame frame;
         if (capture.Acquire(frame, 0)) {
             if (frame.width != width || frame.height != height ||
@@ -463,7 +485,7 @@ void Recorder::Impl::Run() {
                 }
             }
             ++encoded_frames;
-            publish_stats();
+            PublishStats(clock.NowUs());
         }
 
         next_deadline_us += frame_interval_us;
@@ -501,11 +523,15 @@ void Recorder::Impl::Run() {
         }
     }
     if (!muxer.Close()) {
-        fail("muxer close failed");
+        // A stop before the first video packet leaves the muxer without a
+        // header, so Close reports a failure even though nothing went wrong.
+        if (!(stop_requested.load() && packets_written == 0 && !HasError())) {
+            fail("muxer close failed");
+        }
     }
 
     // Final publish after flush/close so elapsed_us includes the tail.
-    publish_stats();
+    PublishStats(clock.NowUs());
     MarkFinished();
 }
 
@@ -525,6 +551,7 @@ bool Recorder::Start(const RecorderConfig& config, std::string& error) {
         impl_->error.clear();
         impl_->stats = RecorderStats{};
     }
+    impl_->ResetRunState();
     impl_->stop_requested.store(false);
     impl_->running.store(false);
     impl_->finished.store(false);
@@ -537,9 +564,11 @@ bool Recorder::Start(const RecorderConfig& config, std::string& error) {
             impl_->Run();
         } catch (const std::exception& exception) {
             impl_->RecordError(exception.what());
+            impl_->PublishStats(QpcClock().NowUs());
             impl_->MarkFinished();
         } catch (...) {
             impl_->RecordError("recording thread failed");
+            impl_->PublishStats(QpcClock().NowUs());
             impl_->MarkFinished();
         }
     });

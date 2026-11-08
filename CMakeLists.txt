@@ -64,6 +64,7 @@ if(BUILD_TESTING)
     tests/test_audio_mixer.cpp
     tests/test_aac_encoder.cpp
     tests/test_wasapi_capture.cpp
+    tests/test_recorder.cpp
   )
   target_link_libraries(hmmob_tests PRIVATE hmmob_core Catch2::Catch2WithMain)
   include(Catch)
