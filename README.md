@@ -45,6 +45,20 @@ $cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7
 .\build\release\Release\evspike.exe
 ```
 
+## 图形界面
+
+`hmmob_ev_app` 是录制窗口：上方为实时预览（640×360@30），下方可选择显示器、帧率、编码、码率、HDR 色调映射、系统声音/麦克风及增益和输出路径，并显示录制时长、帧数、fps 与音频统计。
+
+```powershell
+.\build\release\Release\hmmob_ev_app.exe
+```
+
+自动化验证可使用 `--smoke <秒数> <输出路径>`：窗口显示后自动按 60 fps / HEVC / 音频开启开始录制，到时停止，并把统计写入 `<输出路径>.smoke.txt` 后退出（成功退出码 0，失败 1）。
+
+```powershell
+.\build\release\Release\hmmob_ev_app.exe --smoke 5 C:\temp\ui-smoke.mp4
+```
+
 ## evspike 用法
 
 `evspike` 抓取指定显示器的桌面，转换为 NV12，用 AMD AMF 编码，并封装为 MP4。默认同时录制系统声音（WASAPI loopback）和麦克风，混音后编码为 AAC 音轨；桌面无新帧时重复上一帧，按固定帧率输出。

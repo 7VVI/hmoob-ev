@@ -47,6 +47,50 @@ add_executable(evspike src/spike/main.cpp)
 target_include_directories(evspike SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
 target_link_libraries(evspike PRIVATE hmmob_core ${FFMPEG_LIBRARIES})
 
+# Qt recording window.
+find_package(Qt6 REQUIRED COMPONENTS Widgets)
+qt_standard_project_setup()
+
+qt_add_executable(hmmob_ev_app WIN32
+  src/app/main.cpp
+  src/app/MainWindow.cpp src/app/MainWindow.h
+  src/app/PreviewWidget.cpp src/app/PreviewWidget.h)
+target_link_libraries(hmmob_ev_app PRIVATE hmmob_core Qt6::Widgets)
+
+# vcpkg's applocal deployment only copies DLLs the exe imports directly; Qt
+# discovers plugins at run time, so the platform/style plugins must be copied
+# next to the executable explicitly. Derive the Qt prefix from the imported
+# Qt6::Core location, i.e. <prefix>/bin/Qt6Core.dll.
+get_target_property(_qt_core_location Qt6::Core IMPORTED_LOCATION_RELEASE)
+if(NOT _qt_core_location)
+  get_target_property(_qt_core_location Qt6::Core IMPORTED_LOCATION)
+endif()
+if(_qt_core_location)
+  get_filename_component(_qt_bin_dir "${_qt_core_location}" DIRECTORY)
+  get_filename_component(_qt_prefix "${_qt_bin_dir}" DIRECTORY)
+else()
+  # <prefix>/share/Qt6 -> <prefix>
+  get_filename_component(_qt_prefix "${Qt6_DIR}/../.." ABSOLUTE)
+endif()
+
+set(_qt_plugins_dir "${_qt_prefix}/${QT6_INSTALL_PLUGINS}")
+if(NOT EXISTS "${_qt_plugins_dir}")
+  set(_qt_plugins_dir "${_qt_prefix}/plugins")
+endif()
+
+if(EXISTS "${_qt_plugins_dir}/platforms")
+  add_custom_command(TARGET hmmob_ev_app POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "${_qt_plugins_dir}/platforms"
+      "$<TARGET_FILE_DIR:hmmob_ev_app>/platforms"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "${_qt_plugins_dir}/styles"
+      "$<TARGET_FILE_DIR:hmmob_ev_app>/styles"
+    COMMENT "Deploying Qt platform and style plugins")
+else()
+  message(WARNING "Qt plugin directory not found: ${_qt_plugins_dir}")
+endif()
+
 include(CTest)
 if(BUILD_TESTING)
   find_package(Catch2 3 REQUIRED)
