@@ -51,6 +51,14 @@ void PreviewWidget::SetBadgeText(const QString& text) {
     update();
 }
 
+void PreviewWidget::SetPlaceholderText(const QString& text) {
+    if (placeholder_text_ == text) {
+        return;
+    }
+    placeholder_text_ = text;
+    update();
+}
+
 void PreviewWidget::SetErrorBadge(const QString& text) {
     if (error_badge_ == text) {
         return;
@@ -86,7 +94,7 @@ void PreviewWidget::paintEvent(QPaintEvent* event) {
         QFont idle_font = font();
         idle_font.setPixelSize(15);
         painter.setFont(idle_font);
-        painter.drawText(rect(), Qt::AlignCenter, QStringLiteral("预览未开始"));
+        painter.drawText(rect(), Qt::AlignCenter, placeholder_text_);
     }
 
     // Badge: dark translucent pill with a monitor glyph.

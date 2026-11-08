@@ -14,6 +14,9 @@ struct DisplayInfo {
     int adapter_index = 0;
     int output_index = 0;
     std::wstring name;
+    // Monitor rectangle on the virtual desktop, in physical pixels.
+    int left = 0;
+    int top = 0;
     int width = 0;
     int height = 0;
     bool attached_to_desktop = false;

@@ -6,6 +6,7 @@
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEvent>
@@ -30,6 +31,7 @@
 #include <QTextStream>
 #include <QThread>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cstdint>
@@ -48,8 +50,11 @@
 #include "app/ModeTile.h"
 #include "app/NavTabButton.h"
 #include "app/PreviewWidget.h"
+#include "app/RegionSelector.h"
 #include "app/TitleBar.h"
 #include "app/UiFont.h"
+#include "app/WindowPickerDialog.h"
+#include "core/capture/CameraSource.h"
 #include "core/gfx/D3D11Device.h"
 
 #ifndef DWMWA_WINDOW_CORNER_PREFERENCE
@@ -151,6 +156,7 @@ MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
 
     BuildUi();
     PopulateDisplays();
+    PopulateCameras();
     ConnectSignals();
 
     const QRect available = screen()->availableGeometry();
@@ -271,7 +277,12 @@ QWidget* MainWindow::BuildNavRow() {
         ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, 4000);
     });
     connect(open_files, &QPushButton::clicked, this, [this] {
-        ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, 4000);
+        const QString path =
+            QFileInfo(output_edit_->text().trimmed()).absolutePath();
+        if (path.isEmpty() ||
+            !QDesktopServices::openUrl(QUrl::fromLocalFile(path))) {
+            ShowStatus(QStringLiteral("无法打开保存文件夹"), true, 4000);
+        }
     });
     connect(menu, &QPushButton::clicked, this, [this] {
         ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, 4000);
@@ -470,11 +481,6 @@ QWidget* MainWindow::BuildVideoCard() {
     codec_combo_->addItem(QStringLiteral("HEVC"), QStringLiteral("hevc"));
     codec_combo_->addItem(QStringLiteral("H.264"), QStringLiteral("h264"));
     row2->addWidget(codec_combo_);
-    row2->addSpacing(10);
-    auto* info = MakeIconLabel(Icon::Info, 18, QColor(0xB4, 0xBA, 0xC6), body);
-    info->setToolTip(QStringLiteral(
-        "HEVC 压缩效率更高、文件更小；H.264 兼容性更好。"));
-    row2->addWidget(info);
     row2->addStretch(1);
     layout->addLayout(row2);
     layout->addSpacing(6);
@@ -526,6 +532,21 @@ QWidget* MainWindow::BuildVideoCard() {
     display_layout->addWidget(display_combo_, 1);
     display_row_->setVisible(false);
     advanced_layout->addWidget(display_row_);
+
+    auto* camera_row = new QWidget(advanced_content_);
+    auto* camera_layout = new QHBoxLayout(camera_row);
+    camera_layout->setContentsMargins(0, 0, 0, 0);
+    camera_layout->setSpacing(0);
+    auto* camera_label = new QLabel(QStringLiteral("摄像头设备"), camera_row);
+    camera_label->setObjectName(QStringLiteral("rowLabel"));
+    camera_label->setFixedWidth(64);
+    camera_layout->addWidget(camera_label);
+    camera_layout->addSpacing(10);
+    camera_combo_ = new StyledComboBox(camera_row);
+    camera_combo_->setFixedHeight(32);
+    camera_combo_->setMinimumWidth(150);
+    camera_layout->addWidget(camera_combo_, 1);
+    advanced_layout->addWidget(camera_row);
 
     advanced_content_->setVisible(false);
     layout->addWidget(advanced_content_);
@@ -621,24 +642,24 @@ QWidget* MainWindow::BuildBottomBar() {
         divider->setStyleSheet(QStringLiteral("background:#E5E6EB;"));
         return divider;
     };
+    // One row per stat: icon + caption + value, all vertically centered. The
+    // previous caption-over-value stack never lined up with the icon.
     auto make_stat = [&](Icon icon, const QString& caption, QLabel** value) {
         auto* block = new QWidget(bar);
         auto* block_layout = new QHBoxLayout(block);
         block_layout->setContentsMargins(0, 0, 0, 0);
-        block_layout->setSpacing(10);
+        block_layout->setSpacing(0);
         block_layout->addWidget(
             MakeIconLabel(icon, 22, QColor(0x86, 0x90, 0x9C), block),
             0, Qt::AlignVCenter);
-        auto* text_layout = new QVBoxLayout;
-        text_layout->setContentsMargins(0, 0, 0, 0);
-        text_layout->setSpacing(1);
+        block_layout->addSpacing(10);
         auto* caption_label = new QLabel(caption, block);
         caption_label->setObjectName(QStringLiteral("caption"));
+        block_layout->addWidget(caption_label, 0, Qt::AlignVCenter);
+        block_layout->addSpacing(10);
         auto* value_label = new QLabel(block);
         value_label->setObjectName(QStringLiteral("statValue"));
-        text_layout->addWidget(caption_label);
-        text_layout->addWidget(value_label);
-        block_layout->addLayout(text_layout);
+        block_layout->addWidget(value_label, 0, Qt::AlignVCenter);
         *value = value_label;
         return block;
     };
@@ -690,7 +711,7 @@ void MainWindow::PopulateDisplays() {
     if (displays_.empty()) {
         resolution_combo_->addItem(QStringLiteral("无可用显示器"));
         resolution_combo_->setEnabled(false);
-        start_button_->setEnabled(false);
+        start_button_->setEnabled(CanStart());
         has_display_ = false;
         selected_display_index_ = -1;
         ShowPreviewError(QStringLiteral("无可用显示器"));
@@ -701,8 +722,43 @@ void MainWindow::PopulateDisplays() {
     resolution_combo_->setCurrentIndex(0);
     display_combo_->setCurrentIndex(0);
     has_display_ = true;
-    start_button_->setEnabled(true);
+    start_button_->setEnabled(CanStart());
     UpdateBadgeText();
+}
+
+void MainWindow::PopulateCameras() {
+    if (!camera_combo_) {
+        return;
+    }
+    camera_combo_->clear();
+    const std::vector<hmmob::CameraSource::CameraDeviceInfo> devices =
+        hmmob::CameraSource::EnumerateDevices();
+    camera_device_count_ = static_cast<int>(devices.size());
+    if (devices.empty()) {
+        camera_combo_->addItem(QStringLiteral("未检测到摄像头"));
+        camera_combo_->setEnabled(false);
+        return;
+    }
+    for (size_t i = 0; i < devices.size(); ++i) {
+        camera_combo_->addItem(QString::fromStdString(devices[i].name),
+                               static_cast<int>(i));
+    }
+    camera_combo_->setCurrentIndex(0);
+    camera_combo_->setEnabled(true);
+}
+
+bool MainWindow::CanStart() const {
+    // Window and camera capture do not depend on an attached display.
+    return has_display_ || selected_mode_ >= 2;
+}
+
+QRect MainWindow::SelectedDisplayRect() const {
+    for (const hmmob::DisplayInfo& info : displays_) {
+        if (info.index == selected_display_index_) {
+            return QRect(info.left, info.top, info.width, info.height);
+        }
+    }
+    return QRect();
 }
 
 void MainWindow::ConnectSignals() {
@@ -712,11 +768,14 @@ void MainWindow::ConnectSignals() {
             &MainWindow::ToggleMaximize);
     connect(title_bar_, &TitleBar::CloseRequested, this, &QWidget::close);
 
-    for (NavTabButton* tab : {window_tab_, region_tab_, camera_tab_}) {
-        connect(tab, &QAbstractButton::clicked, this, [this] {
-            ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, 4000);
-        });
-    }
+    connect(screen_tab_, &QAbstractButton::clicked, this,
+            [this] { SetMode(0); });
+    connect(region_tab_, &QAbstractButton::clicked, this,
+            [this] { SetMode(1); });
+    connect(window_tab_, &QAbstractButton::clicked, this,
+            [this] { SetMode(2); });
+    connect(camera_tab_, &QAbstractButton::clicked, this,
+            [this] { SetMode(3); });
 
     connect(browse_button_, &QPushButton::clicked, this,
             &MainWindow::BrowseOutput);
@@ -744,12 +803,67 @@ void MainWindow::ConnectSignals() {
                     SelectDisplay(display_combo_->itemData(index).toInt());
                 }
             });
-    connect(mode_group_, &QButtonGroup::idClicked, this, [this](int id) {
-        selected_mode_ = id;
-        if (id != 0) {
-            ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, 4000);
+    connect(mode_group_, &QButtonGroup::idClicked, this,
+            [this](int id) { SetMode(id); });
+}
+
+void MainWindow::SetMode(int mode) {
+    if (mode < 0 || mode > 3 || recording_) {
+        return;
+    }
+    const bool changed = selected_mode_ != mode;
+    selected_mode_ = mode;
+
+    if (QAbstractButton* tile = mode_group_->button(mode)) {
+        const QSignalBlocker blocker(mode_group_);
+        tile->setChecked(true);
+    }
+    screen_tab_->SetActive(mode == 0);
+    region_tab_->SetActive(mode == 1);
+    window_tab_->SetActive(mode == 2);
+    camera_tab_->SetActive(mode == 3);
+
+    // HDR tone mapping only exists on the desktop-duplication path.
+    hdr_check_->setEnabled(mode == 0);
+    start_button_->setEnabled(CanStart());
+
+    const QString region_hint =
+        QStringLiteral("点击开始录制后框选区域");
+    if (mode == 0 || mode == 1) {
+        preview_->SetPlaceholderText(QStringLiteral("预览未开始"));
+        // Screen and region share the same desktop preview; do not tear it
+        // down when the user just switches between the two.
+        if (!preview_source_.Running()) {
+            QApplication::setOverrideCursor(Qt::WaitCursor);
+            StartIdlePreview();
+            QApplication::restoreOverrideCursor();
         }
-    });
+        if (mode == 1) {
+            ShowStatus(region_hint, false, 0);
+        } else if (status_label_->text() == region_hint) {
+            status_timer_->stop();
+            status_label_->clear();
+            status_label_->setStyleSheet(QString());
+        }
+    } else {
+        // No live desktop preview for window/camera capture; the recorder's
+        // preview takes over once recording starts.
+        if (changed || preview_source_.Running()) {
+            QApplication::setOverrideCursor(Qt::WaitCursor);
+            preview_source_.Stop();
+            QApplication::restoreOverrideCursor();
+        }
+        preview_->SetFrame(nullptr);
+        last_preview_.reset();
+        ShowPreviewError(QString());
+        preview_->SetPlaceholderText(QStringLiteral("开始录制后显示画面"));
+        if (status_label_->text() == region_hint) {
+            status_timer_->stop();
+            status_label_->clear();
+            status_label_->setStyleSheet(QString());
+        }
+    }
+    UpdateBadgeText();
 }
 
 void MainWindow::UpdateAudioUi(bool microphone) {
@@ -844,6 +958,34 @@ void MainWindow::SelectDisplay(int display_index) {
 }
 
 void MainWindow::UpdateBadgeText() {
+    if (recording_) {
+        switch (selected_mode_) {
+            case 0:
+                preview_->SetBadgeText(
+                    QStringLiteral("预览区域 · %1 × %2")
+                        .arg(capture_width_)
+                        .arg(capture_height_));
+                return;
+            case 1:
+                preview_->SetBadgeText(QStringLiteral("区域 · %1 × %2")
+                                           .arg(capture_width_)
+                                           .arg(capture_height_));
+                return;
+            default:
+                preview_->SetBadgeText(QStringLiteral("录制中 · %1 × %2")
+                                           .arg(capture_width_)
+                                           .arg(capture_height_));
+                return;
+        }
+    }
+    if (selected_mode_ == 2) {
+        preview_->SetBadgeText(QStringLiteral("窗口录制"));
+        return;
+    }
+    if (selected_mode_ == 3) {
+        preview_->SetBadgeText(QStringLiteral("摄像头"));
+        return;
+    }
     for (const hmmob::DisplayInfo& info : displays_) {
         if (info.index == selected_display_index_) {
             preview_->SetBadgeText(
@@ -889,7 +1031,9 @@ void MainWindow::UpdateStatusGeometry() {
 }
 
 void MainWindow::StartIdlePreview() {
-    if (!has_display_ || recording_ || isMinimized()) {
+    // Window and camera modes deliberately show a placeholder until recording
+    // starts; only the desktop-backed modes own an idle preview.
+    if (!has_display_ || recording_ || isMinimized() || selected_mode_ > 1) {
         return;
     }
     std::string error;
@@ -925,11 +1069,16 @@ void MainWindow::BrowseOutput() {
 
 hmmob::RecorderConfig MainWindow::BuildConfig() const {
     hmmob::RecorderConfig config;
+    config.mode = static_cast<hmmob::CaptureMode>(selected_mode_);
     config.display_index = selected_display_index_;
     config.fps = fps_combo_->currentData().toInt();
     config.codec = codec_combo_->currentData().toString().toStdString();
     config.bitrate = bitrate_combo_->currentData().toLongLong();
-    config.hdr = hdr_check_->isChecked();
+    // HDR capture only exists on the desktop-duplication path.
+    config.hdr = selected_mode_ == 0 && hdr_check_->isChecked();
+    if (camera_combo_ && camera_combo_->isEnabled()) {
+        config.camera_index = camera_combo_->currentData().toInt();
+    }
     config.system_audio = system_toggle_->isChecked();
     config.microphone = mic_toggle_->isChecked();
     // Source levels are intentionally fixed at unity in this build; the
@@ -948,12 +1097,14 @@ bool MainWindow::StartRecording() {
     if (recording_) {
         return false;
     }
-    if (selected_mode_ != 0) {
-        ShowStatus(QStringLiteral("该录制模式尚未实现"), false, 4000);
+    const int mode = selected_mode_;
+
+    if ((mode == 0 || mode == 1) && !has_display_) {
+        SetError(QStringLiteral("无可用显示器"));
         return false;
     }
-    if (!has_display_) {
-        SetError(QStringLiteral("无可用显示器"));
+    if (mode == 3 && camera_device_count_ <= 0) {
+        SetError(QStringLiteral("未检测到摄像头"));
         return false;
     }
     if (output_edit_->text().trimmed().isEmpty()) {
@@ -975,7 +1126,81 @@ bool MainWindow::StartRecording() {
         }
     }
 
-    const hmmob::RecorderConfig config = BuildConfig();
+    hmmob::RecorderConfig config = BuildConfig();
+    QRect selected_region;
+
+    if (mode == 1) {
+        // Region: the overlay sits over the selected display and returns a
+        // display-local rectangle.
+        if (smoke_) {
+            selected_region = smoke_region_;
+        } else {
+            preview_source_.Stop();
+            preview_->SetFrame(nullptr);
+            last_preview_.reset();
+            if (!RegionSelector::Select(this, SelectedDisplayRect(),
+                                        selected_region)) {
+                StartIdlePreview();
+                return false;
+            }
+        }
+        const QRect display = SelectedDisplayRect();
+        if (display.width() > 0 && display.height() > 0) {
+            selected_region = selected_region.intersected(
+                QRect(0, 0, display.width(), display.height()));
+        }
+        if (selected_region.width() <= 0 || selected_region.height() <= 0) {
+            SetError(QStringLiteral("无效的录制区域"));
+            StartIdlePreview();
+            return false;
+        }
+        config.region_x = selected_region.x();
+        config.region_y = selected_region.y();
+        config.region_width = selected_region.width();
+        config.region_height = selected_region.height();
+    } else if (mode == 2) {
+        HWND window = nullptr;
+        if (smoke_) {
+            const std::vector<HWND> windows =
+                WindowPickerDialog::EnumerateCapturableWindows();
+            if (smoke_window_ < 1 ||
+                smoke_window_ > static_cast<int>(windows.size())) {
+                SetError(QStringLiteral("未找到指定的窗口（共 %1 个）")
+                             .arg(windows.size()));
+                return false;
+            }
+            window = windows[static_cast<size_t>(smoke_window_ - 1)];
+            wchar_t title[512] = {};
+            GetWindowTextW(window, title, 511);
+            smoke_window_title_ = QString::fromWCharArray(title);
+        } else {
+            preview_source_.Stop();
+            preview_->SetFrame(nullptr);
+            last_preview_.reset();
+            if (!WindowPickerDialog::Pick(this, window)) {
+                StartIdlePreview();
+                return false;
+            }
+            // Picking can take a while; keep the idle duplication released
+            // until the recorder owns the capture path.
+            preview_source_.Stop();
+        }
+        if (!window) {
+            SetError(QStringLiteral("未选择窗口"));
+            return false;
+        }
+        config.window = window;
+    } else if (mode == 3) {
+        if (smoke_) {
+            config.camera_index = smoke_camera_;
+        }
+        if (config.camera_index < 0 ||
+            config.camera_index >= camera_device_count_) {
+            SetError(QStringLiteral("摄像头不可用"));
+            return false;
+        }
+    }
+
     output_path_ = path;
 
     // The idle preview owns a desktop duplication for this output. Release it
@@ -998,7 +1223,7 @@ bool MainWindow::StartRecording() {
         SetError(QString::fromStdString(error));
         SetConfigEnabled(true);
         start_button_->SetRecording(false);
-        start_button_->setEnabled(has_display_);
+        start_button_->setEnabled(CanStart());
         StartIdlePreview();
         return false;
     }
@@ -1015,6 +1240,17 @@ bool MainWindow::StartRecording() {
     start_button_->setEnabled(true);
     duration_label_->setText(QStringLiteral("00:00:00"));
     size_label_->setText(QStringLiteral("0 MB"));
+
+    const hmmob::RecorderStats started_stats = recorder_.stats();
+    capture_width_ = started_stats.display_width;
+    capture_height_ = started_stats.display_height;
+    if (capture_width_ <= 0 || capture_height_ <= 0) {
+        if (mode == 1) {
+            capture_width_ = selected_region.width();
+            capture_height_ = selected_region.height();
+        }
+    }
+    UpdateBadgeText();
     ShowStatus(QStringLiteral("录制中…"), false, 0);
     poll_timer_->start();
     return true;
@@ -1040,6 +1276,10 @@ void MainWindow::StopRecording() {
 
 void MainWindow::Tick() {
     if (!recording_) {
+        if (selected_mode_ > 1) {
+            // Window/camera modes show a placeholder, not a desktop preview.
+            return;
+        }
         // Idle preview: the desktop is captured by the preview thread until a
         // recording takes the capture path over.
         std::shared_ptr<const hmmob::PreviewFrame> idle_frame =
@@ -1104,7 +1344,7 @@ void MainWindow::FinalizeRecording() {
     SetConfigEnabled(true);
     start_button_->SetRecording(false);
     start_button_->SetBusy(false);
-    start_button_->setEnabled(has_display_);
+    start_button_->setEnabled(CanStart());
     UpdateStatsLabels(stats);
 
     if (!error.isEmpty()) {
@@ -1137,11 +1377,14 @@ void MainWindow::FinalizeRecording() {
         preview_->SetFrame(std::move(frame));
     }
 
-    // Resume the idle preview now that the recorder has released the capture
-    // path and the controls are usable again. If the window is minimized the
+    // Resume the idle preview for the desktop-backed modes only; window and
+    // camera keep the recorder's last frame. If the window is minimized the
     // preview is restarted on restore instead, and the poll timer must not
     // keep ticking invisibly.
-    StartIdlePreview();
+    if (selected_mode_ == 0 || selected_mode_ == 1) {
+        StartIdlePreview();
+    }
+    UpdateBadgeText();
     if (isMinimized()) {
         poll_timer_->stop();
     }
@@ -1157,7 +1400,10 @@ void MainWindow::SetConfigEnabled(bool enabled) {
     fps_combo_->setEnabled(enabled);
     codec_combo_->setEnabled(enabled);
     bitrate_combo_->setEnabled(enabled);
-    hdr_check_->setEnabled(enabled);
+    hdr_check_->setEnabled(enabled && selected_mode_ == 0);
+    if (camera_combo_) {
+        camera_combo_->setEnabled(enabled && camera_device_count_ > 0);
+    }
     mic_toggle_->setEnabled(enabled);
     system_toggle_->setEnabled(enabled);
     mic_device_combo_->setEnabled(enabled);
@@ -1181,11 +1427,16 @@ void MainWindow::UpdateStatsLabels(const hmmob::RecorderStats& stats) {
     size_label_->setText(FormatSize(stats.encoded_bytes));
 }
 
-void MainWindow::StartSmoke(int seconds, const QString& path) {
+void MainWindow::StartSmoke(int seconds, const QString& path,
+                            const SmokeOptions& options) {
     smoke_ = true;
     smoke_finished_ = false;
     smoke_seconds_ = seconds;
     smoke_path_ = path;
+    smoke_mode_ = options.mode;
+    smoke_region_ = options.region;
+    smoke_window_ = options.window;
+    smoke_camera_ = options.camera;
     output_edit_->setText(path);
 
     if (!displays_.empty()) {
@@ -1199,8 +1450,18 @@ void MainWindow::StartSmoke(int seconds, const QString& path) {
     hdr_check_->setChecked(false);
     system_toggle_->setChecked(true);
     mic_toggle_->setChecked(true);
-    full_tile_->setChecked(true);
-    selected_mode_ = 0;
+
+    int mode = 0;
+    if (smoke_mode_ == QStringLiteral("region")) {
+        mode = 1;
+    } else if (smoke_mode_ == QStringLiteral("window")) {
+        mode = 2;
+    } else if (smoke_mode_ == QStringLiteral("camera")) {
+        mode = 3;
+    } else {
+        smoke_mode_ = QStringLiteral("screen");
+    }
+    SetMode(mode);
 
     // A hung smoke run must still terminate with a diagnosable result instead
     // of leaving a window behind for the automation to time out on. The
@@ -1239,6 +1500,30 @@ void MainWindow::FinishSmoke(const hmmob::RecorderStats& stats,
                   QIODevice::Truncate)) {
         QTextStream out(&file);
         out.setEncoding(QStringConverter::Utf8);
+        out << "mode=" << smoke_mode_;
+        if (smoke_mode_ == QStringLiteral("region")) {
+            const int width = stats.display_width > 0
+                                  ? stats.display_width
+                                  : smoke_region_.width();
+            const int height = stats.display_height > 0
+                                   ? stats.display_height
+                                   : smoke_region_.height();
+            out << " w=" << width << " h=" << height;
+        } else if (smoke_mode_ == QStringLiteral("window")) {
+            out << " window=" << smoke_window_ << " w=" << stats.display_width
+                << " h=" << stats.display_height;
+            if (!smoke_window_title_.isEmpty()) {
+                QString title = smoke_window_title_;
+                title.replace(QLatin1Char('\r'), QLatin1Char(' '));
+                title.replace(QLatin1Char('\n'), QLatin1Char(' '));
+                out << " title=\"" << title << '"';
+            }
+        } else if (smoke_mode_ == QStringLiteral("camera")) {
+            out << " camera=" << smoke_camera_;
+        } else {
+            out << " w=" << stats.display_width << " h=" << stats.display_height;
+        }
+        out << '\n';
         out << "elapsed_us=" << stats.elapsed_us << '\n';
         out << "encoded=" << stats.encoded_frames << '\n';
         out << "packets=" << stats.packets_written << '\n';

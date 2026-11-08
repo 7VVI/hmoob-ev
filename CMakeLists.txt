@@ -63,6 +63,8 @@ qt_add_executable(hmmob_ev_app WIN32
   src/app/main.cpp
   src/app/MainWindow.cpp src/app/MainWindow.h
   src/app/PreviewWidget.cpp src/app/PreviewWidget.h
+  src/app/RegionSelector.cpp src/app/RegionSelector.h
+  src/app/WindowPickerDialog.cpp src/app/WindowPickerDialog.h
   src/app/IconRenderer.cpp src/app/IconRenderer.h
   src/app/LevelMeter.cpp src/app/LevelMeter.h
   src/app/NavTabButton.cpp src/app/NavTabButton.h
@@ -70,7 +72,7 @@ qt_add_executable(hmmob_ev_app WIN32
   src/app/TitleBar.cpp src/app/TitleBar.h
   src/app/Controls.cpp src/app/Controls.h
   src/app/UiFont.h)
-target_link_libraries(hmmob_ev_app PRIVATE hmmob_core Qt6::Widgets dwmapi)
+target_link_libraries(hmmob_ev_app PRIVATE hmmob_core Qt6::Widgets dwmapi shell32)
 
 # vcpkg's applocal deployment only copies DLLs the exe imports directly; Qt
 # discovers plugins at run time, so the platform/style plugins must be copied
@@ -138,7 +140,10 @@ if(BUILD_TESTING)
   )
   target_link_libraries(hmmob_tests PRIVATE hmmob_core Catch2::Catch2WithMain)
   include(Catch)
-  catch_discover_tests(hmmob_tests ADD_TAGS_AS_LABELS)
+  # The WindowSource integration test can block inside Windows Graphics
+  # Capture on some machines; a per-test timeout keeps ctest from hanging.
+  catch_discover_tests(hmmob_tests ADD_TAGS_AS_LABELS
+    PROPERTIES TIMEOUT 120)
 endif()
 
 # vcpkg applocal deploys FFmpeg DLLs next to evspike.exe. Install-time deployment lands in Phase 1.

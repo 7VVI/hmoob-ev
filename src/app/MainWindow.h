@@ -31,6 +31,15 @@ class StyledComboBox;
 class TitleBar;
 class ToggleCheckBox;
 
+// Optional capture-mode selection for an automated smoke run. Region and
+// window values bypass the interactive selector/picker.
+struct SmokeOptions {
+    QString mode = QStringLiteral("screen");  // screen|region|window|camera
+    QRect region;                             // display-local pixels
+    int window = 0;                           // 1-based capturable window
+    int camera = 0;
+};
+
 class MainWindow : public QWidget {
     Q_OBJECT
 
@@ -41,7 +50,8 @@ public:
     // Automated verification hook: starts a recording after the window is
     // shown, stops it after `seconds`, writes "<path>.smoke.txt" with the
     // stats, then exits 0 (success) or 1 (failure).
-    void StartSmoke(int seconds, const QString& path);
+    void StartSmoke(int seconds, const QString& path,
+                    const SmokeOptions& options = SmokeOptions());
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -61,7 +71,14 @@ private:
     QLabel* MakeIconLabel(Icon icon, int size, const QColor& color,
                           QWidget* parent);
     void PopulateDisplays();
+    void PopulateCameras();
     void ConnectSignals();
+
+    // Switches the four capture modes, keeping the nav tabs, mode tiles and
+    // the idle preview in sync.
+    void SetMode(int mode);
+    bool CanStart() const;
+    QRect SelectedDisplayRect() const;
 
     void SelectDisplay(int display_index);
     void UpdateBadgeText();
@@ -117,6 +134,8 @@ private:
     StyledComboBox* bitrate_combo_ = nullptr;
     StyledComboBox* mic_device_combo_ = nullptr;
     StyledComboBox* system_device_combo_ = nullptr;
+    StyledComboBox* camera_combo_ = nullptr;
+    int camera_device_count_ = 0;
     QPushButton* mic_toggle_ = nullptr;
     QPushButton* system_toggle_ = nullptr;
     LevelMeter* mic_meter_ = nullptr;
@@ -144,6 +163,9 @@ private:
     bool maximized_ = false;
     bool minimized_ = false;
     int tick_count_ = 0;
+    // Resolved size of the active (or last) recording, used by the badge.
+    int capture_width_ = 0;
+    int capture_height_ = 0;
     QString output_path_;
     // Last path this window generated itself (as opposed to one the user
     // typed or picked). Decides whether the next run may regenerate a fresh
@@ -159,5 +181,10 @@ private:
     bool smoke_finished_ = false;
     int smoke_seconds_ = 0;
     QString smoke_path_;
+    QString smoke_mode_ = QStringLiteral("screen");
+    QRect smoke_region_;
+    int smoke_window_ = 0;
+    int smoke_camera_ = 0;
+    QString smoke_window_title_;
     QTimer* smoke_watchdog_ = nullptr;
 };

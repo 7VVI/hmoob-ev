@@ -30,6 +30,8 @@ DisplayInfo FromDesc1(const DXGI_OUTPUT_DESC1& desc,
     info.adapter_index = adapter_index;
     info.output_index = output_index;
     info.name = desc.DeviceName;
+    info.left = desc.DesktopCoordinates.left;
+    info.top = desc.DesktopCoordinates.top;
     info.width = RectWidth(desc.DesktopCoordinates);
     info.height = RectHeight(desc.DesktopCoordinates);
     info.attached_to_desktop = desc.AttachedToDesktop != FALSE;
@@ -161,6 +163,8 @@ std::vector<DisplayInfo> D3D11Device::EnumerateDisplays() const {
                 info.adapter_index = static_cast<int>(adapter_index);
                 info.output_index = static_cast<int>(output_index);
                 info.name = desc.DeviceName;
+                info.left = desc.DesktopCoordinates.left;
+                info.top = desc.DesktopCoordinates.top;
                 info.width = RectWidth(desc.DesktopCoordinates);
                 info.height = RectHeight(desc.DesktopCoordinates);
                 info.attached_to_desktop = desc.AttachedToDesktop != FALSE;

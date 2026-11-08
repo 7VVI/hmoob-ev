@@ -22,6 +22,9 @@ public:
 
     void SetBadgeText(const QString& text);
 
+    // Text shown while no frame is available. Defaults to "预览未开始".
+    void SetPlaceholderText(const QString& text);
+
     // Persistent error pill at the top-right of the preview. Empty clears it.
     // Independent of the status line above the bottom bar.
     void SetErrorBadge(const QString& text);
@@ -34,5 +37,6 @@ private:
     std::shared_ptr<const hmmob::PreviewFrame> frame_;
     QImage image_;
     QString badge_text_ = QStringLiteral("预览区域");
+    QString placeholder_text_ = QStringLiteral("预览未开始");
     QString error_badge_;
 };
