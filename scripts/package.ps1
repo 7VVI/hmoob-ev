@@ -1,7 +1,7 @@
 # Build a self-contained Windows x64 release package.
-# Usage: powershell -ExecutionPolicy Bypass -File .\scripts\package.ps1 [-Version 0.1.0]
+# Usage: powershell -ExecutionPolicy Bypass -File .\scripts\package.ps1 [-Version 0.1.1]
 param(
-    [string]$Version = "0.1.0"
+    [string]$Version = "0.1.1"
 )
 
 $ErrorActionPreference = "Stop"
