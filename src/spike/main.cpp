@@ -1,3 +1,7 @@
+#include <windows.h>
+
+#include <dwmapi.h>
+
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -6,6 +10,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <vector>
 
 #include "core/recorder/Recorder.h"
 
@@ -22,6 +27,7 @@ struct Options {
     int region_y = 0;
     int region_width = 0;
     int region_height = 0;
+    int window = 0;  // 1-based index into the enumerated window list
     int bitrate = 50000000;
     bool hdr = false;
     bool audio = true;
@@ -42,6 +48,7 @@ void PrintUsage(std::FILE* stream) {
                  "  --codec <name>          hevc or h264 (default: hevc)\n"
                  "  --display <n>           display index, >= 0 (default: 0)\n"
                  "  --region <x>,<y>,<w>,<h>  record one region of the display\n"
+                 "  --window <n>            record the n-th listed visible top-level window\n"
                  "  --bitrate <bps>         target bitrate in bits/s, > 0 (default: 50000000)\n"
                  "  --hdr                   request HDR capture (tone mapped to SDR)\n"
                  "  --no-audio              disable all audio\n"
@@ -154,6 +161,12 @@ ParseResult Parse(int argc, char** argv, Options& options) {
             options.region_y = values[1];
             options.region_width = values[2];
             options.region_height = values[3];
+        } else if (arg == "--window") {
+            const char* v = next("--window");
+            if (!v || !ParseInt(v, options.window)) {
+                std::fprintf(stderr, "invalid value for --window\n");
+                return ParseResult::Error;
+            }
         } else if (arg == "--bitrate") {
             const char* v = next("--bitrate");
             if (!v || !ParseInt(v, options.bitrate)) {
@@ -186,6 +199,90 @@ ParseResult Parse(int argc, char** argv, Options& options) {
         }
     }
     return ParseResult::Ok;
+}
+
+std::string Narrow(const std::wstring& text) {
+    if (text.empty()) {
+        return {};
+    }
+    const int length = WideCharToMultiByte(
+        CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0,
+        nullptr, nullptr);
+    if (length <= 0) {
+        return {};
+    }
+    std::string result(static_cast<size_t>(length), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                        result.data(), length, nullptr, nullptr);
+    return result;
+}
+
+bool IsCloaked(HWND window) {
+    BOOL cloaked = FALSE;
+    const HRESULT hr =
+        DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloaked, sizeof(cloaked));
+    return SUCCEEDED(hr) && cloaked != FALSE;
+}
+
+struct WindowEntry {
+    HWND window = nullptr;
+    std::wstring title;
+};
+
+BOOL CALLBACK CollectWindow(HWND window, LPARAM param) {
+    auto& windows = *reinterpret_cast<std::vector<WindowEntry>*>(param);
+    if (!IsWindowVisible(window) || IsCloaked(window)) {
+        return TRUE;
+    }
+    if ((GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) != 0) {
+        return TRUE;
+    }
+    RECT bounds{};
+    if (!GetWindowRect(window, &bounds) || bounds.right <= bounds.left ||
+        bounds.bottom <= bounds.top) {
+        return TRUE;
+    }
+    const int length = GetWindowTextLengthW(window);
+    if (length <= 0) {
+        return TRUE;
+    }
+    std::wstring title(static_cast<size_t>(length) + 1, L'\0');
+    const int copied = GetWindowTextW(window, title.data(), length + 1);
+    if (copied <= 0) {
+        return TRUE;
+    }
+    title.resize(static_cast<size_t>(copied));
+    if (title.find_first_not_of(L" \t\r\n") == std::wstring::npos) {
+        return TRUE;
+    }
+    windows.push_back({window, std::move(title)});
+    return TRUE;
+}
+
+// Lists the visible top-level windows and returns the 1-based `index`-th one.
+HWND SelectWindow(int index, std::string& error) {
+    std::vector<WindowEntry> windows;
+    EnumWindows(&CollectWindow, reinterpret_cast<LPARAM>(&windows));
+    if (windows.empty()) {
+        error = "no visible window found";
+        return nullptr;
+    }
+    std::printf("windows:\n");
+    for (size_t i = 0; i < windows.size(); ++i) {
+        std::printf("  [%zu] %s\n", i + 1, Narrow(windows[i].title).c_str());
+    }
+    if (index < 1 || index > static_cast<int>(windows.size())) {
+        char message[128];
+        std::snprintf(message, sizeof(message),
+                      "window index %d is out of range (1..%zu)", index,
+                      windows.size());
+        error = message;
+        return nullptr;
+    }
+    const WindowEntry& chosen = windows[static_cast<size_t>(index - 1)];
+    std::printf("selected window [%d] %s\n", index,
+                Narrow(chosen.title).c_str());
+    return chosen.window;
 }
 
 }  // namespace
@@ -228,6 +325,14 @@ int main(int argc, char** argv) {
                      "--region needs non-negative x,y and positive w,h\n");
         return 1;
     }
+    if (options.window < 0) {
+        std::fprintf(stderr, "--window must be non-negative\n");
+        return 1;
+    }
+    if (options.window > 0 && options.has_region) {
+        std::fprintf(stderr, "--window cannot be combined with --region\n");
+        return 1;
+    }
     if (options.system_volume < 0.0f || options.system_volume > 4.0f) {
         std::fprintf(stderr, "--system-volume must be between 0 and 4\n");
         PrintUsage(stderr);
@@ -241,7 +346,16 @@ int main(int argc, char** argv) {
 
     hmmob::RecorderConfig config;
     config.display_index = options.display;
-    if (options.has_region) {
+    if (options.window > 0) {
+        std::string select_error;
+        const HWND window = SelectWindow(options.window, select_error);
+        if (!window) {
+            std::fprintf(stderr, "%s\n", select_error.c_str());
+            return 1;
+        }
+        config.mode = hmmob::CaptureMode::Window;
+        config.window = window;
+    } else if (options.has_region) {
         config.mode = hmmob::CaptureMode::Region;
         config.region_x = options.region_x;
         config.region_y = options.region_y;

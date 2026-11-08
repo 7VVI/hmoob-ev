@@ -52,6 +52,9 @@ public:
     virtual bool failed() const { return false; }
     virtual bool access_lost() const { return false; }
     virtual HRESULT last_error() const { return S_OK; }
+    // Human readable description of the last failure. Empty when there is
+    // none or the source does not provide one.
+    virtual std::string last_message() const { return std::string(); }
 };
 
 }  // namespace hmmob

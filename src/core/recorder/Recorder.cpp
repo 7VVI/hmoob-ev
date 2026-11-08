@@ -14,6 +14,7 @@
 #include "core/audio/WasapiCapture.h"
 #include "core/capture/DesktopSource.h"
 #include "core/capture/VideoSource.h"
+#include "core/capture/WindowSource.h"
 #include "core/common/QpcClock.h"
 #include "core/encoder/AmfEncoder.h"
 #include "core/gfx/D3D11Device.h"
@@ -52,15 +53,18 @@ private:
 
 void ReportWarning(const char* message) { std::fprintf(stderr, "%s\n", message); }
 
-std::unique_ptr<VideoSource> CreateVideoSource(CaptureMode mode,
+std::unique_ptr<VideoSource> CreateVideoSource(const RecorderConfig& config,
                                                std::string& error) {
-    switch (mode) {
+    switch (config.mode) {
         case CaptureMode::Screen:
         case CaptureMode::Region:
             return std::make_unique<DesktopSource>();
         case CaptureMode::Window:
-            error = "window capture is not implemented yet";
-            return nullptr;
+            if (!config.window) {
+                error = "no window selected";
+                return nullptr;
+            }
+            return std::make_unique<WindowSource>();
         case CaptureMode::Camera:
             error = "camera capture is not implemented yet";
             return nullptr;
@@ -269,7 +273,7 @@ void Recorder::Impl::Run() {
 
     std::string source_error;
     const std::unique_ptr<VideoSource> source =
-        CreateVideoSource(config.mode, source_error);
+        CreateVideoSource(config, source_error);
     if (!source) {
         fail_init(source_error);
         return;
@@ -555,10 +559,17 @@ void Recorder::Impl::Run() {
                 ++new_desktop_frames;
             }
         } else if (source->failed()) {
-            char message[96];
-            std::snprintf(message, sizeof(message), "capture failed: 0x%08lx",
-                          static_cast<unsigned long>(source->last_error()));
-            fail(message);
+            // Prefer the source's own description (closed window, resize) over
+            // the bare HRESULT.
+            const std::string detail = source->last_message();
+            if (!detail.empty()) {
+                fail(detail);
+            } else {
+                char message[96];
+                std::snprintf(message, sizeof(message), "capture failed: 0x%08lx",
+                              static_cast<unsigned long>(source->last_error()));
+                fail(message);
+            }
             if (source->last_error() == DXGI_ERROR_DEVICE_REMOVED &&
                 d3d.device()) {
                 std::fprintf(stderr, "device removed reason: 0x%08lx\n",

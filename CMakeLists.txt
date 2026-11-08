@@ -23,6 +23,7 @@ add_library(hmmob_core STATIC
   src/core/gfx/D3D11Device.cpp
   src/core/capture/DxgiCapture.cpp
   src/core/capture/DesktopSource.cpp
+  src/core/capture/WindowSource.cpp
   src/core/gfx/VideoProcessor.cpp
   src/core/gfx/HdrToneMapper.cpp
   src/core/encoder/AmfEncoder.cpp
@@ -41,13 +42,16 @@ target_include_directories(hmmob_core PRIVATE
 # d3dcompiler is only used by HdrToneMapper.cpp, so it stays PRIVATE; CMake
 # still propagates it as LINK_ONLY to consumers of this static library.
 # mmdevapi/ole32/avrt are WASAPI capture dependencies (avrt for MMCSS).
+# windowsapp is the Windows Runtime umbrella lib (RoInitialize, WinRT
+# activation used by WindowSource).
 target_link_libraries(hmmob_core
   PUBLIC d3d11 dxgi mmdevapi ole32 avrt ${FFMPEG_LIBRARIES}
-  PRIVATE d3dcompiler)
+  PRIVATE d3dcompiler windowsapp)
 
 add_executable(evspike src/spike/main.cpp)
 target_include_directories(evspike SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
-target_link_libraries(evspike PRIVATE hmmob_core ${FFMPEG_LIBRARIES})
+# dwmapi is used by the --window enumerator to skip cloaked windows.
+target_link_libraries(evspike PRIVATE hmmob_core ${FFMPEG_LIBRARIES} dwmapi)
 
 # Qt recording window.
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
@@ -126,6 +130,7 @@ if(BUILD_TESTING)
     tests/test_aac_encoder.cpp
     tests/test_wasapi_capture.cpp
     tests/test_desktop_preview.cpp
+    tests/test_window_source.cpp
     tests/test_recorder.cpp
   )
   target_link_libraries(hmmob_tests PRIVATE hmmob_core Catch2::Catch2WithMain)
