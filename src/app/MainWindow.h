@@ -61,7 +61,7 @@ private:
     void PopulateDisplays();
     void ConnectSignals();
 
-    void OnDisplaySelectionChanged();
+    void SelectDisplay(int display_index);
     void UpdateBadgeText();
     // timeout_ms > 0 clears the line after that delay; 0 keeps it until
     // another message replaces it. Preview errors never use this line.
@@ -103,6 +103,7 @@ private:
     QButtonGroup* mode_group_ = nullptr;
     ModeTile* full_tile_ = nullptr;
     int selected_mode_ = 0;
+    int selected_display_index_ = -1;
 
     StyledComboBox* resolution_combo_ = nullptr;
     StyledComboBox* display_combo_ = nullptr;

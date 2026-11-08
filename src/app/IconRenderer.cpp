@@ -10,15 +10,30 @@
 namespace {
 
 void PaintPlay(QPainter& p, const QColor& color) {
-    QPainterPath path;
-    path.moveTo(7.0, 4.0);
-    path.lineTo(19.8, 12.0);
-    path.lineTo(7.0, 20.0);
-    path.closeSubpath();
-    QPen pen(color, 2.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-    p.setPen(pen);
+    // Filled play mark with a smaller play-shaped cut-out, matching the app
+    // logo in the reference rather than a solid triangle.
+    QPainterPath triangle;
+    triangle.moveTo(7.1, 3.2);
+    triangle.lineTo(20.4, 12.0);
+    triangle.lineTo(7.1, 20.8);
+    triangle.closeSubpath();
+
+    QPainterPathStroker stroker;
+    stroker.setWidth(2.2);
+    stroker.setJoinStyle(Qt::RoundJoin);
+    stroker.setCapStyle(Qt::RoundCap);
+    QPainterPath body = stroker.createStroke(triangle).united(triangle);
+
+    QPainterPath cutout;
+    cutout.moveTo(11.7, 8.9);
+    cutout.lineTo(16.0, 12.0);
+    cutout.lineTo(11.7, 15.1);
+    cutout.closeSubpath();
+    body = body.subtracted(cutout);
+
+    p.setPen(Qt::NoPen);
     p.setBrush(color);
-    p.drawPath(path);
+    p.drawPath(body);
 }
 
 void PaintMonitor(QPainter& p, const QColor& color, qreal stroke) {
@@ -47,18 +62,23 @@ void PaintRegion(QPainter& p, const QColor& color, qreal stroke) {
 }
 
 void PaintCamera(QPainter& p, const QColor& color, qreal stroke) {
+    // Camcorder: rounded body with a lens, a small top bump and a D-shaped
+    // grip on the right (the reference's 摄像头 tab icon).
     p.setPen(QPen(color, stroke, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     p.setBrush(Qt::NoBrush);
-    p.drawRoundedRect(QRectF(2.8, 8.0, 18.4, 11.0), 2.4, 2.4);
-    p.drawEllipse(QPointF(12.0, 13.5), 3.4, 3.4);
+    p.drawRoundedRect(QRectF(2.6, 5.8, 13.4, 12.8), 2.4, 2.4);
+    p.drawEllipse(QPointF(9.3, 12.2), 3.1, 3.1);
     QPainterPath bump;
-    bump.moveTo(8.6, 8.0);
-    bump.lineTo(9.8, 5.9);
-    bump.quadTo(10.2, 5.1, 11.1, 5.1);
-    bump.lineTo(12.9, 5.1);
-    bump.quadTo(13.8, 5.1, 14.2, 5.9);
-    bump.lineTo(15.4, 8.0);
+    bump.moveTo(7.8, 5.8);
+    bump.lineTo(8.8, 4.0);
+    bump.quadTo(9.2, 3.4, 9.9, 3.4);
+    bump.lineTo(12.0, 3.4);
+    bump.quadTo(12.7, 3.4, 13.1, 4.0);
+    bump.lineTo(14.1, 5.8);
     p.drawPath(bump);
+    p.drawLine(QPointF(16.0, 9.6), QPointF(17.4, 9.6));
+    p.drawLine(QPointF(16.0, 14.8), QPointF(17.4, 14.8));
+    p.drawRoundedRect(QRectF(17.4, 8.6, 4.0, 7.2), 1.6, 1.6);
 }
 
 void PaintWebcam(QPainter& p, const QColor& color, qreal stroke) {
@@ -103,21 +123,30 @@ void PaintGear(QPainter& p, const QColor& color, qreal stroke) {
 }
 
 void PaintFolder(QPainter& p, const QColor& color, qreal stroke) {
-    QPainterPath path;
-    path.moveTo(3.2, 7.4);
-    path.quadTo(3.2, 5.6, 5.0, 5.6);
-    path.lineTo(9.0, 5.6);
-    path.lineTo(11.0, 7.8);
-    path.lineTo(19.0, 7.8);
-    path.quadTo(20.8, 7.8, 20.8, 9.6);
-    path.lineTo(20.8, 17.2);
-    path.quadTo(20.8, 19.0, 19.0, 19.0);
-    path.lineTo(5.0, 19.0);
-    path.quadTo(3.2, 19.0, 3.2, 17.2);
-    path.closeSubpath();
+    // Open folder: back panel with a tab, plus the angled front panel.
     p.setPen(QPen(color, stroke, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     p.setBrush(Qt::NoBrush);
-    p.drawPath(path);
+
+    QPainterPath back;
+    back.moveTo(3.0, 10.2);
+    back.lineTo(3.0, 6.0);
+    back.quadTo(3.0, 4.6, 4.4, 4.6);
+    back.lineTo(8.6, 4.6);
+    back.lineTo(10.6, 6.8);
+    back.lineTo(19.0, 6.8);
+    back.quadTo(20.9, 6.8, 20.9, 8.7);
+    back.lineTo(20.9, 10.2);
+    p.drawPath(back);
+
+    QPainterPath front;
+    front.moveTo(3.0, 10.2);
+    front.lineTo(20.9, 10.2);
+    front.lineTo(19.5, 18.5);
+    front.quadTo(19.2, 19.9, 17.8, 19.9);
+    front.lineTo(5.2, 19.9);
+    front.quadTo(3.8, 19.9, 3.5, 18.5);
+    front.closeSubpath();
+    p.drawPath(front);
 }
 
 void PaintMenu(QPainter& p, const QColor& color, qreal stroke) {

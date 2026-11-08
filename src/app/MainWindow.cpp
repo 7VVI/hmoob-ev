@@ -28,6 +28,7 @@
 #include <QThread>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <cstdint>
 #include <utility>
 
@@ -143,7 +144,7 @@ MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
                    Qt::WindowMaximizeButtonHint | Qt::WindowSystemMenuHint);
     setStyleSheet(QString::fromUtf8(kStyleSheet));
     resize(1400, 830);
-    setMinimumSize(1180, 720);
+    setMinimumSize(1180, 820);
 
     BuildUi();
     PopulateDisplays();
@@ -601,7 +602,7 @@ QWidget* MainWindow::BuildBottomBar() {
     browse_button_->setToolTip(QStringLiteral("选择保存位置"));
     path_layout->addWidget(browse_button_);
     layout->addWidget(path_box, 2);
-    layout->addSpacing(24);
+    layout->addSpacing(80);
 
     auto make_divider = [&] {
         auto* divider = new QWidget(bar);
@@ -631,8 +632,6 @@ QWidget* MainWindow::BuildBottomBar() {
         return block;
     };
 
-    layout->addWidget(make_divider());
-    layout->addSpacing(20);
     QLabel* duration_value = nullptr;
     QLabel* size_value = nullptr;
     layout->addWidget(make_stat(Icon::Clock, QStringLiteral("预计时长"),
@@ -682,10 +681,12 @@ void MainWindow::PopulateDisplays() {
         resolution_combo_->setEnabled(false);
         start_button_->setEnabled(false);
         has_display_ = false;
+        selected_display_index_ = -1;
         ShowPreviewError(QStringLiteral("无可用显示器"));
         return;
     }
 
+    selected_display_index_ = displays_.front().index;
     resolution_combo_->setCurrentIndex(0);
     display_combo_->setCurrentIndex(0);
     has_display_ = true;
@@ -721,11 +722,22 @@ void MainWindow::ConnectSignals() {
         status_label_->setStyleSheet(QString());
     });
     connect(resolution_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int) { OnDisplaySelectionChanged(); });
+            this, [this](int index) {
+                if (index >= 0) {
+                    SelectDisplay(resolution_combo_->itemData(index).toInt());
+                }
+            });
     connect(display_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int) { OnDisplaySelectionChanged(); });
+            this, [this](int index) {
+                if (index >= 0) {
+                    SelectDisplay(display_combo_->itemData(index).toInt());
+                }
+            });
     connect(mode_group_, &QButtonGroup::idClicked, this, [this](int id) {
         selected_mode_ = id;
+        if (id != 0) {
+            ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, 4000);
+        }
     });
 }
 
@@ -780,13 +792,34 @@ void MainWindow::ShowPreviewError(const QString& detail) {
     preview_->setToolTip(detail);
 }
 
-void MainWindow::OnDisplaySelectionChanged() {
-    const int index = resolution_combo_->currentData().toInt();
+void MainWindow::SelectDisplay(int display_index) {
+    if (display_index == selected_display_index_) {
+        return;
+    }
+    const bool known = std::any_of(
+        displays_.begin(), displays_.end(),
+        [display_index](const hmmob::DisplayInfo& info) {
+            return info.index == display_index;
+        });
+    if (!known) {
+        return;
+    }
+    // Both combos are views on the same authoritative selection. Changing one
+    // must not snap back to the other, which matters when two displays share a
+    // resolution and only their indices differ.
+    selected_display_index_ = display_index;
+    {
+        const QSignalBlocker blocker(resolution_combo_);
+        const int index = resolution_combo_->findData(display_index);
+        if (index >= 0) {
+            resolution_combo_->setCurrentIndex(index);
+        }
+    }
     {
         const QSignalBlocker blocker(display_combo_);
-        const int display_index = display_combo_->findData(index);
-        if (display_index >= 0) {
-            display_combo_->setCurrentIndex(display_index);
+        const int index = display_combo_->findData(display_index);
+        if (index >= 0) {
+            display_combo_->setCurrentIndex(index);
         }
     }
     UpdateBadgeText();
@@ -800,9 +833,8 @@ void MainWindow::OnDisplaySelectionChanged() {
 }
 
 void MainWindow::UpdateBadgeText() {
-    const int index = resolution_combo_->currentData().toInt();
     for (const hmmob::DisplayInfo& info : displays_) {
-        if (info.index == index) {
+        if (info.index == selected_display_index_) {
             preview_->SetBadgeText(
                 QStringLiteral("预览区域 · %1 × %2")
                     .arg(info.width)
@@ -844,8 +876,7 @@ void MainWindow::StartIdlePreview() {
         return;
     }
     std::string error;
-    const int display_index = resolution_combo_->currentData().toInt();
-    if (!preview_source_.Start(display_index, 640, 360, 30, error)) {
+    if (!preview_source_.Start(selected_display_index_, 640, 360, 30, error)) {
         preview_->SetFrame(nullptr);
         last_preview_.reset();
         ShowPreviewError(QString::fromStdString(error));
@@ -877,7 +908,7 @@ void MainWindow::BrowseOutput() {
 
 hmmob::RecorderConfig MainWindow::BuildConfig() const {
     hmmob::RecorderConfig config;
-    config.display_index = resolution_combo_->currentData().toInt();
+    config.display_index = selected_display_index_;
     config.fps = fps_combo_->currentData().toInt();
     config.codec = codec_combo_->currentData().toString().toStdString();
     config.bitrate = bitrate_combo_->currentData().toLongLong();
@@ -1127,7 +1158,9 @@ void MainWindow::StartSmoke(int seconds, const QString& path) {
     smoke_path_ = path;
     output_edit_->setText(path);
 
-    resolution_combo_->setCurrentIndex(0);
+    if (!displays_.empty()) {
+        SelectDisplay(displays_.front().index);
+    }
     fps_combo_->setCurrentIndex(fps_combo_->findData(60));
     codec_combo_->setCurrentIndex(
         codec_combo_->findData(QStringLiteral("hevc")));
