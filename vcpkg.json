@@ -8,6 +8,11 @@
       "default-features": false,
       "features": ["avcodec", "avformat", "swresample", "swscale"]
     },
-    "catch2"
+    "catch2",
+    {
+      "name": "qtbase",
+      "default-features": false,
+      "features": ["gui", "widgets"]
+    }
   ]
 }
