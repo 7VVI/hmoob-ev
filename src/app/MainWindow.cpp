@@ -266,12 +266,9 @@ QWidget* MainWindow::BuildNavRow() {
     };
     auto* settings = make_action(Icon::Gear, QStringLiteral("设置"));
     auto* open_files = make_action(Icon::Folder, QStringLiteral("打开文件"));
-    auto* menu = make_action(Icon::Menu, QString());
     layout->addWidget(settings);
     layout->addSpacing(16);
     layout->addWidget(open_files);
-    layout->addSpacing(16);
-    layout->addWidget(menu);
 
     connect(settings, &QPushButton::clicked, this, [this] {
         ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, 4000);
@@ -284,10 +281,6 @@ QWidget* MainWindow::BuildNavRow() {
             ShowStatus(QStringLiteral("无法打开保存文件夹"), true, 4000);
         }
     });
-    connect(menu, &QPushButton::clicked, this, [this] {
-        ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, 4000);
-    });
-
     return nav;
 }
 
