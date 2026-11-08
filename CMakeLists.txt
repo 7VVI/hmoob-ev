@@ -61,7 +61,9 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets)
 qt_standard_project_setup()
 
 qt_add_executable(hmmob_ev_app WIN32
+  src/app/app.rc
   src/app/main.cpp
+  src/app/Logo.cpp src/app/Logo.h
   src/app/MainWindow.cpp src/app/MainWindow.h
   src/app/PreviewWidget.cpp src/app/PreviewWidget.h
   src/app/RegionSelector.cpp src/app/RegionSelector.h
@@ -77,6 +79,8 @@ qt_add_executable(hmmob_ev_app WIN32
   src/app/Controls.cpp src/app/Controls.h
   src/app/UiFont.h)
 target_link_libraries(hmmob_ev_app PRIVATE hmmob_core Qt6::Widgets dwmapi shell32)
+# app.rc references "assets/logo.ico" from the repository root.
+target_include_directories(hmmob_ev_app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 # vcpkg's applocal deployment only copies DLLs the exe imports directly; Qt
 # discovers plugins at run time, so the platform/style plugins must be copied

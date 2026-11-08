@@ -30,6 +30,7 @@
 
 #include "app/Controls.h"
 #include "app/IconRenderer.h"
+#include "app/Logo.h"
 #include "app/UiFont.h"
 #include "core/capture/CameraSource.h"
 
@@ -418,8 +419,7 @@ QWidget* SettingsDialog::BuildHeader() {
     layout->setSpacing(0);
 
     header_mark_ = new QLabel(header);
-    header_mark_->setPixmap(IconRenderer::Pixmap(
-        Icon::Play, 26, Theme::Instance().colors().primary));
+    header_mark_->setPixmap(Logo::Pixmap(26));
     header_mark_->setFixedSize(26, 26);
     layout->addWidget(header_mark_, 0, Qt::AlignVCenter);
     layout->addSpacing(12);
@@ -809,8 +809,7 @@ QWidget* SettingsDialog::BuildAboutPage() {
     layout->addSpacing(24);
 
     about_mark_ = new QLabel(page);
-    about_mark_->setPixmap(IconRenderer::Pixmap(
-        Icon::Play, 48, Theme::Instance().colors().primary));
+    about_mark_->setPixmap(Logo::Pixmap(48));
     about_mark_->setFixedSize(48, 48);
     layout->addWidget(about_mark_);
     layout->addSpacing(12);
@@ -974,17 +973,14 @@ void SettingsDialog::SetThemeMode(int mode, bool announce) {
 }
 
 void SettingsDialog::ApplyTheme() {
-    const ThemeColors& colors = Theme::Instance().colors();
     setStyleSheet(Theme::Instance().Expand(
         QString::fromUtf8(kSettingsStyleTemplate)));
     UpdateSegmentIcons();
     if (header_mark_) {
-        header_mark_->setPixmap(
-            IconRenderer::Pixmap(Icon::Play, 26, colors.primary));
+        header_mark_->setPixmap(Logo::Pixmap(26));
     }
     if (about_mark_) {
-        about_mark_->setPixmap(
-            IconRenderer::Pixmap(Icon::Play, 48, colors.primary));
+        about_mark_->setPixmap(Logo::Pixmap(48));
     }
 #ifdef Q_OS_WIN
     if (windowHandle()) {

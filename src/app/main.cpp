@@ -5,6 +5,7 @@
 
 #include <cstdio>
 
+#include "app/Logo.h"
 #include "app/MainWindow.h"
 #include "app/Theme.h"
 #include "app/UiFont.h"
@@ -60,6 +61,7 @@ int main(int argc, char** argv) {
     QApplication::setOrganizationName(QStringLiteral("Hmmob"));
     QApplication::setApplicationName(QStringLiteral("Hmmob EV"));
     QApplication::setApplicationVersion(QStringLiteral("0.1.0"));
+    QApplication::setWindowIcon(Logo::Icon());
 
     app.setFont(UiFont(14));
 

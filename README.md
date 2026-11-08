@@ -75,6 +75,10 @@ $cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7
 .\build\release\Release\hmmob_ev_app.exe --smoke 5 C:\temp\ui-smoke.mp4
 ```
 
+### 应用标志
+
+界面中的标志由 `src/app/Logo.cpp` 使用 QPainter 实时绘制（运行时不需要图片插件），用于标题栏、设置窗口、关于我们、任务栏窗口图标与托盘图标。可分发素材位于 `assets/`：`logo.svg`（矢量源）、`logo-512.png` / `logo-256.png` / `logo-64.png`（由 1024 母版缩放）与多尺寸 `logo.ico`（16/24/32/48/64/128/256）。构建时 `src/app/app.rc` 将 `logo.ico` 嵌入 `hmmob_ev_app.exe`，资源管理器、任务栏与 Alt+Tab 直接显示该图标；`assets/logo-concepts/` 保留设计阶段的概念图。
+
 ## evspike 用法
 
 `evspike` 抓取指定显示器的桌面，转换为 NV12，用 AMD AMF 编码，并封装为 MP4。默认同时录制系统声音（WASAPI loopback）和麦克风，混音后编码为 AAC 音轨；桌面无新帧时重复上一帧，按固定帧率输出。

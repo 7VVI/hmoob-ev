@@ -10,6 +10,7 @@
 #include <QScreen>
 
 #include "app/IconRenderer.h"
+#include "app/Logo.h"
 #include "app/Theme.h"
 
 namespace {
@@ -118,7 +119,7 @@ TitleBar::TitleBar(QWidget* parent) : QWidget(parent) {
 void TitleBar::ApplyTheme() {
     const ThemeColors& colors = Theme::Instance().colors();
     if (mark_) {
-        mark_->setPixmap(IconRenderer::Pixmap(Icon::Play, 30, colors.primary));
+        mark_->setPixmap(Logo::Pixmap(30));
     }
     if (title_label_) {
         title_label_->setStyleSheet(

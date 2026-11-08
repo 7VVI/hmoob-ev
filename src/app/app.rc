@@ -1,0 +1,4 @@
+// Application icon: Explorer, taskbar, Alt+Tab and the executable's shell
+// icon. The PNG/ICO files under assets/ are build-time inputs only; the Qt UI
+// paints its own copy with QPainter (see Logo.cpp).
+IDI_APP_ICON ICON "assets/logo.ico"

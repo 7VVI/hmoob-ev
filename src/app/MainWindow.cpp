@@ -56,6 +56,7 @@
 #include "app/Controls.h"
 #include "app/IconRenderer.h"
 #include "app/LevelMeter.h"
+#include "app/Logo.h"
 #include "app/ModeTile.h"
 #include "app/NavTabButton.h"
 #include "app/PreviewWidget.h"
@@ -899,12 +900,7 @@ void MainWindow::CreateTray() {
         return;
     }
     tray_icon_ = new QSystemTrayIcon(this);
-    QIcon icon;
-    for (const int size : {16, 24, 32, 64}) {
-        icon.addPixmap(IconRenderer::Pixmap(
-            Icon::Play, size, Theme::Instance().ToneColor(IconTone::Primary)));
-    }
-    tray_icon_->setIcon(icon);
+    tray_icon_->setIcon(Logo::Icon());
     tray_icon_->setToolTip(QStringLiteral("Hmmob 录屏"));
 
     auto* menu = new QMenu(this);
