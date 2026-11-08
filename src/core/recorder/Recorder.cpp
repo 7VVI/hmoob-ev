@@ -246,6 +246,8 @@ void Recorder::Impl::Run() {
     QpcClock clock;
     const int64_t start_us = clock.NowUs();
     const int64_t frame_interval_us = 1'000'000 / config.fps;
+    const int64_t target_frames =
+        static_cast<int64_t>(config.duration_seconds) * config.fps;
     int64_t next_deadline_us = start_us;
     int acquired = 0;
     int new_desktop_frames = 0;
@@ -287,6 +289,23 @@ void Recorder::Impl::Run() {
         }
         ++audio_packets;
         audio_bytes += static_cast<int64_t>(packet.data.size());
+    };
+
+    // Published after every encoded frame so a UI polling stats() sees live
+    // time/frames/fps/audio. The display fields set during init are retained.
+    const auto publish_stats = [&] {
+        std::lock_guard<std::mutex> lock(mutex);
+        stats.elapsed_us = clock.NowUs() - start_us;
+        stats.acquired = acquired;
+        stats.new_desktop_frames = new_desktop_frames;
+        stats.encoded_frames = encoded_frames;
+        stats.packets_written = packets_written;
+        stats.encoded_bytes = encoded_bytes;
+        stats.encode_errors = encode_errors;
+        stats.audio_packets = audio_packets;
+        stats.audio_bytes = audio_bytes;
+        stats.target_frames = static_cast<int>(target_frames);
+        stats.audio_track = audio_track;
     };
 
     running.store(true);
@@ -444,6 +463,7 @@ void Recorder::Impl::Run() {
                 }
             }
             ++encoded_frames;
+            publish_stats();
         }
 
         next_deadline_us += frame_interval_us;
@@ -457,8 +477,6 @@ void Recorder::Impl::Run() {
     system_capture.Stop();
     mic_capture.Stop();
 
-    const int64_t target_frames =
-        static_cast<int64_t>(config.duration_seconds) * config.fps;
     if (config.duration_seconds > 0 &&
         static_cast<int64_t>(encoded_frames) * 100 < target_frames * 99) {
         std::fprintf(stderr,
@@ -486,20 +504,8 @@ void Recorder::Impl::Run() {
         fail("muxer close failed");
     }
 
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        stats.elapsed_us = clock.NowUs() - start_us;
-        stats.acquired = acquired;
-        stats.new_desktop_frames = new_desktop_frames;
-        stats.encoded_frames = encoded_frames;
-        stats.packets_written = packets_written;
-        stats.encoded_bytes = encoded_bytes;
-        stats.encode_errors = encode_errors;
-        stats.audio_packets = audio_packets;
-        stats.audio_bytes = audio_bytes;
-        stats.target_frames = static_cast<int>(target_frames);
-        stats.audio_track = audio_track;
-    }
+    // Final publish after flush/close so elapsed_us includes the tail.
+    publish_stats();
     MarkFinished();
 }
 
