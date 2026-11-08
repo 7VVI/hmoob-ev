@@ -7,6 +7,8 @@
 #include <thread>
 #include <vector>
 
+#include "core/preview/PreviewFrame.h"
+
 namespace hmmob {
 
 struct RecorderConfig {
@@ -43,14 +45,6 @@ struct RecorderStats {
     int display_width = 0;
     int display_height = 0;
     int display_format = 0;
-};
-
-struct PreviewFrame {
-    int width = 0;
-    int height = 0;
-    int stride = 0;
-    std::vector<uint8_t> bgra;
-    uint64_t sequence = 0;
 };
 
 class Recorder {

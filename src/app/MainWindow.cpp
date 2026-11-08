@@ -19,6 +19,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QShowEvent>
 #include <QStandardPaths>
 #include <QStringConverter>
 #include <QTextStream>
@@ -32,6 +33,14 @@
 #include "core/gfx/D3D11Device.h"
 
 namespace {
+
+QString IdleStatusText() {
+    return QStringLiteral("已录 00:00.0 · 0 帧 · 0.0 fps");
+}
+
+QString PreviewUnavailableText(const std::string& error) {
+    return QStringLiteral("预览不可用：%1").arg(QString::fromStdString(error));
+}
 
 QString FormatBytes(int64_t bytes) {
     if (bytes < 1024) {
@@ -51,7 +60,7 @@ MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
     ConnectSignals();
 }
 
-MainWindow::~MainWindow() = default;
+MainWindow::~MainWindow() { preview_source_.Stop(); }
 
 void MainWindow::BuildUi() {
     setWindowTitle(QStringLiteral("Hmmob EV 录制"));
@@ -142,8 +151,7 @@ void MainWindow::BuildUi() {
     button_row->addStretch(1);
     root->addLayout(button_row);
 
-    status_label_ = new QLabel(
-        QStringLiteral("已录 00:00.0 · 0 帧 · 0.0 fps"), this);
+    status_label_ = new QLabel(IdleStatusText(), this);
     audio_label_ = new QLabel(QStringLiteral("音频 0 包 · 0 B"), this);
     error_label_ = new QLabel(this);
     error_label_->setStyleSheet(QStringLiteral("color: #c00000;"));
@@ -168,6 +176,41 @@ void MainWindow::ConnectSignals() {
     connect(system_audio_check_, &QCheckBox::toggled, system_gain_,
             &QWidget::setEnabled);
     connect(mic_check_, &QCheckBox::toggled, mic_gain_, &QWidget::setEnabled);
+    connect(display_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                if (!recording_) {
+                    StartIdlePreview();
+                }
+            });
+}
+
+void MainWindow::showEvent(QShowEvent* event) {
+    QWidget::showEvent(event);
+    if (preview_started_) {
+        return;
+    }
+    preview_started_ = true;
+    // The tick timer also drives the idle preview, so it must run before the
+    // first recording starts.
+    poll_timer_->start();
+    StartIdlePreview();
+}
+
+void MainWindow::StartIdlePreview() {
+    if (!has_display_ || recording_) {
+        return;
+    }
+    std::string error;
+    const int display_index = display_combo_->currentData().toInt();
+    if (!preview_source_.Start(display_index, 640, 360, 30, error)) {
+        preview_->SetFrame(nullptr);
+        last_preview_.reset();
+        status_label_->setText(PreviewUnavailableText(error));
+        return;
+    }
+    if (status_label_->text().startsWith(QStringLiteral("预览不可用："))) {
+        status_label_->setText(IdleStatusText());
+    }
 }
 
 void MainWindow::PopulateDisplays() {
@@ -268,6 +311,11 @@ bool MainWindow::StartRecording() {
     const hmmob::RecorderConfig config = BuildConfig();
     output_path_ = path;
 
+    // The idle preview owns a desktop duplication for this output. Release it
+    // (Stop joins within one acquire timeout) before the recorder creates its
+    // own, otherwise the second DuplicateOutput can fail.
+    preview_source_.Stop();
+
     // A new attempt must never show the previous run's last frame, even if
     // initialization fails.
     preview_->SetFrame(nullptr);
@@ -282,6 +330,7 @@ bool MainWindow::StartRecording() {
     if (!started) {
         SetError(QString::fromStdString(error));
         SetConfigEnabled(true);
+        StartIdlePreview();
         return false;
     }
 
@@ -310,6 +359,25 @@ void MainWindow::StopRecording() {
 
 void MainWindow::Tick() {
     if (!recording_) {
+        // Idle preview: the desktop is captured by the preview thread until a
+        // recording takes the capture path over.
+        std::shared_ptr<const hmmob::PreviewFrame> idle_frame =
+            preview_source_.LatestFrame();
+        if (idle_frame && idle_frame != last_preview_) {
+            last_preview_ = idle_frame;
+            preview_->SetFrame(std::move(idle_frame));
+        }
+        const std::string preview_error = preview_source_.error();
+        if (!preview_error.empty()) {
+            const QString message = PreviewUnavailableText(preview_error);
+            if (status_label_->text() != message) {
+                status_label_->setText(message);
+            }
+        } else if (status_label_->text().startsWith(
+                       QStringLiteral("预览不可用："))) {
+            status_label_->setText(IdleStatusText());
+        }
+        // Stats stay idle until recording starts.
         return;
     }
 
@@ -351,7 +419,7 @@ void MainWindow::FinalizeRecording() {
     recording_ = false;
     stop_requested_ = false;
     save_watchdog_.invalidate();
-    poll_timer_->stop();
+    // The tick timer keeps running: it drives the idle preview from here on.
 
     const hmmob::RecorderStats stats = recorder_.stats();
     const QString error = QString::fromStdString(recorder_.error());
@@ -398,6 +466,10 @@ void MainWindow::FinalizeRecording() {
         last_preview_ = frame;
         preview_->SetFrame(std::move(frame));
     }
+
+    // Resume the idle preview now that the recorder has released the capture
+    // path and the controls are usable again.
+    StartIdlePreview();
 
     if (smoke_) {
         FinishSmoke(stats, error);
@@ -530,6 +602,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
         return;
     }
     if (!recorder_.Running()) {
+        preview_source_.Stop();
         event->accept();
         return;
     }
@@ -563,5 +636,6 @@ void MainWindow::closeEvent(QCloseEvent* event) {
         QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
         QThread::msleep(50);
     }
+    preview_source_.Stop();
     event->accept();
 }

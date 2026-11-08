@@ -30,6 +30,7 @@ add_library(hmmob_core STATIC
   src/core/audio/AudioMixer.cpp
   src/core/audio/AacEncoder.cpp
   src/core/audio/WasapiCapture.cpp
+  src/core/preview/DesktopPreview.cpp
   src/core/recorder/Recorder.cpp
 )
 target_include_directories(hmmob_core PUBLIC src)
@@ -116,6 +117,7 @@ if(BUILD_TESTING)
     tests/test_audio_mixer.cpp
     tests/test_aac_encoder.cpp
     tests/test_wasapi_capture.cpp
+    tests/test_desktop_preview.cpp
     tests/test_recorder.cpp
   )
   target_link_libraries(hmmob_tests PRIVATE hmmob_core Catch2::Catch2WithMain)

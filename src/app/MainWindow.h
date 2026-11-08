@@ -5,6 +5,7 @@
 #include <QWidget>
 #include <memory>
 
+#include "core/preview/DesktopPreview.h"
 #include "core/recorder/Recorder.h"
 
 class QCheckBox;
@@ -14,6 +15,7 @@ class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QShowEvent;
 class QTimer;
 class PreviewWidget;
 
@@ -31,12 +33,14 @@ public:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    void showEvent(QShowEvent* event) override;
 
 private:
     void BuildUi();
     void PopulateDisplays();
     void ConnectSignals();
 
+    void StartIdlePreview();
     void Tick();
     void RefreshStats();
     bool StartRecording();
@@ -54,6 +58,7 @@ private:
     void UpdateStatsLabels(const hmmob::RecorderStats& stats, bool update_status);
 
     hmmob::Recorder recorder_;
+    hmmob::DesktopPreview preview_source_;
 
     PreviewWidget* preview_ = nullptr;
     QComboBox* display_combo_ = nullptr;
@@ -75,6 +80,7 @@ private:
     QTimer* poll_timer_ = nullptr;
 
     bool has_display_ = false;
+    bool preview_started_ = false;
     bool recording_ = false;
     bool stop_requested_ = false;
     bool closing_ = false;
