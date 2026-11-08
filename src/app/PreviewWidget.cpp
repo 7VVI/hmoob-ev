@@ -51,6 +51,14 @@ void PreviewWidget::SetBadgeText(const QString& text) {
     update();
 }
 
+void PreviewWidget::SetErrorBadge(const QString& text) {
+    if (error_badge_ == text) {
+        return;
+    }
+    error_badge_ = text;
+    update();
+}
+
 void PreviewWidget::paintEvent(QPaintEvent* event) {
     (void)event;
     QPainter painter(this);
@@ -105,6 +113,23 @@ void PreviewWidget::paintEvent(QPaintEvent* event) {
         QRectF(icon_rect.right() + kBadgeGap, badge.top(),
                text_width + 2, badge.height()),
         Qt::AlignLeft | Qt::AlignVCenter, badge_text_);
+
+    if (!error_badge_.isEmpty()) {
+        QFont error_font = font();
+        error_font.setPixelSize(14);
+        error_font.setWeight(QFont::DemiBold);
+        painter.setFont(error_font);
+        const QFontMetrics error_metrics(error_font);
+        const qreal error_width =
+            kBadgePadding * 2 + error_metrics.horizontalAdvance(error_badge_);
+        const QRectF error_badge(width() - kBadgeMargin - error_width,
+                                 kBadgeMargin, error_width, 36);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(0xE5, 0x48, 0x4D, 245));
+        painter.drawRoundedRect(error_badge, 8.0, 8.0);
+        painter.setPen(QColor(Qt::white));
+        painter.drawText(error_badge, Qt::AlignCenter, error_badge_);
+    }
 
     painter.setClipping(false);
     painter.setBrush(Qt::NoBrush);

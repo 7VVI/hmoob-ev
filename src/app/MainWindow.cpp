@@ -104,10 +104,6 @@ QPushButton#advancedButton:hover { background: #F0F3F8; }
 QWidget#advancedContent { background: transparent; }
 )";
 
-QString PreviewUnavailableText(const std::string& error) {
-    return QStringLiteral("预览不可用：%1").arg(QString::fromStdString(error));
-}
-
 QString FormatDuration(int64_t elapsed_us) {
     const int64_t total_seconds = elapsed_us / 1000000;
     const int64_t hours = total_seconds / 3600;
@@ -260,13 +256,13 @@ QWidget* MainWindow::BuildNavRow() {
     layout->addWidget(menu);
 
     connect(settings, &QPushButton::clicked, this, [this] {
-        ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, true);
+        ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, 4000);
     });
     connect(open_files, &QPushButton::clicked, this, [this] {
-        ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, true);
+        ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, 4000);
     });
     connect(menu, &QPushButton::clicked, this, [this] {
-        ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, true);
+        ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, 4000);
     });
 
     return nav;
@@ -686,6 +682,7 @@ void MainWindow::PopulateDisplays() {
         resolution_combo_->setEnabled(false);
         start_button_->setEnabled(false);
         has_display_ = false;
+        ShowPreviewError(QStringLiteral("无可用显示器"));
         return;
     }
 
@@ -705,7 +702,7 @@ void MainWindow::ConnectSignals() {
 
     for (NavTabButton* tab : {window_tab_, region_tab_, camera_tab_}) {
         connect(tab, &QAbstractButton::clicked, this, [this] {
-            ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, true);
+            ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, 4000);
         });
     }
 
@@ -720,10 +717,8 @@ void MainWindow::ConnectSignals() {
     });
     connect(poll_timer_, &QTimer::timeout, this, &MainWindow::Tick);
     connect(status_timer_, &QTimer::timeout, this, [this] {
-        if (!status_message_locked_) {
-            status_label_->clear();
-            status_label_->setStyleSheet(QString());
-        }
+        status_label_->clear();
+        status_label_->setStyleSheet(QString());
     });
     connect(resolution_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) { OnDisplaySelectionChanged(); });
@@ -759,21 +754,30 @@ void MainWindow::SetAdvancedExpanded(bool expanded) {
     }
 }
 
-void MainWindow::ShowStatus(const QString& text, bool error, bool transient) {
-    // A message the user just triggered supersedes a locked recording result;
-    // otherwise the 4 s timer below could never clear it.
-    if (transient) {
-        status_message_locked_ = false;
-    }
+void MainWindow::ShowStatus(const QString& text, bool error, int timeout_ms) {
     status_label_->setText(text);
     status_label_->setStyleSheet(
         error ? QStringLiteral("color:#E5484D; font-size:13px;")
               : QStringLiteral("color:#86909C; font-size:13px;"));
-    if (transient) {
-        status_timer_->start();
+    if (timeout_ms > 0) {
+        status_timer_->start(timeout_ms);
     } else {
         status_timer_->stop();
     }
+}
+
+void MainWindow::ShowPreviewError(const QString& detail) {
+    if (preview_error_detail_ == detail) {
+        return;
+    }
+    preview_error_detail_ = detail;
+    // The badge only carries a short marker; the full error is inspectable via
+    // the tooltip. It lives on the preview card, so a save result in the
+    // status line and a preview failure can be on screen at the same time.
+    preview_->SetErrorBadge(detail.isEmpty()
+                                ? QString()
+                                : QStringLiteral("预览不可用 ×"));
+    preview_->setToolTip(detail);
 }
 
 void MainWindow::OnDisplaySelectionChanged() {
@@ -844,15 +848,10 @@ void MainWindow::StartIdlePreview() {
     if (!preview_source_.Start(display_index, 640, 360, 30, error)) {
         preview_->SetFrame(nullptr);
         last_preview_.reset();
-        if (!status_message_locked_) {
-            ShowStatus(PreviewUnavailableText(error), true, false);
-        }
+        ShowPreviewError(QString::fromStdString(error));
         return;
     }
-    if (!status_message_locked_ &&
-        status_label_->text().startsWith(QStringLiteral("预览不可用："))) {
-        ShowStatus(QString(), false, false);
-    }
+    ShowPreviewError(QString());
 }
 
 QString MainWindow::DefaultOutputPath() const {
@@ -902,7 +901,7 @@ bool MainWindow::StartRecording() {
         return false;
     }
     if (selected_mode_ != 0) {
-        ShowStatus(QStringLiteral("该录制模式尚未实现"), false, true);
+        ShowStatus(QStringLiteral("该录制模式尚未实现"), false, 4000);
         return false;
     }
     if (!has_display_) {
@@ -952,15 +951,12 @@ bool MainWindow::StartRecording() {
         SetConfigEnabled(true);
         start_button_->SetRecording(false);
         start_button_->setEnabled(has_display_);
-        // Keep this failure visible; a preview-restart message must not
-        // replace it.
-        status_message_locked_ = true;
         StartIdlePreview();
         return false;
     }
 
     SetError(QString());
-    status_message_locked_ = false;
+    ShowPreviewError(QString());
     recording_ = true;
     stop_requested_ = false;
     tick_count_ = 0;
@@ -970,7 +966,7 @@ bool MainWindow::StartRecording() {
     start_button_->setEnabled(true);
     duration_label_->setText(QStringLiteral("00:00:00"));
     size_label_->setText(QStringLiteral("0 MB"));
-    ShowStatus(QStringLiteral("录制中…"), false, false);
+    ShowStatus(QStringLiteral("录制中…"), false, 0);
     poll_timer_->start();
     return true;
 }
@@ -984,7 +980,7 @@ void MainWindow::StopRecording() {
     save_watchdog_.start();
     start_button_->setEnabled(false);
     start_button_->SetBusy(true);
-    ShowStatus(QStringLiteral("正在保存…"), false, false);
+    ShowStatus(QStringLiteral("正在保存…"), false, 0);
 }
 
 void MainWindow::Tick() {
@@ -997,18 +993,12 @@ void MainWindow::Tick() {
             last_preview_ = idle_frame;
             preview_->SetFrame(std::move(idle_frame));
         }
-        if (!status_message_locked_) {
-            const std::string preview_error = preview_source_.error();
-            if (!preview_error.empty()) {
-                const QString message = PreviewUnavailableText(preview_error);
-                if (status_label_->text() != message) {
-                    ShowStatus(message, true, false);
-                }
-            } else if (status_label_->text().startsWith(
-                           QStringLiteral("预览不可用："))) {
-                ShowStatus(QString(), false, false);
-            }
-        }
+        // Preview failures live in their own badge on the preview so that a
+        // save/failure result in the status line is never overwritten.
+        const std::string preview_error = preview_source_.error();
+        ShowPreviewError(preview_error.empty()
+                             ? QString()
+                             : QString::fromStdString(preview_error));
         return;
     }
 
@@ -1024,7 +1014,7 @@ void MainWindow::Tick() {
     if (stop_requested_ && !recorder_.Finished() &&
         save_watchdog_.isValid() && save_watchdog_.elapsed() >= 15000) {
         ShowStatus(QStringLiteral("正在保存…（已超过 15 秒，仍在等待）"), false,
-                   false);
+                   0);
     }
 
     if (++tick_count_ % 8 == 0) {
@@ -1063,14 +1053,14 @@ void MainWindow::FinalizeRecording() {
 
     if (!error.isEmpty()) {
         SetError(error);
-        ShowStatus(QStringLiteral("保存失败：%1").arg(error), true, false);
+        ShowStatus(QStringLiteral("保存失败：%1").arg(error), true, 8000);
     } else if (stats.encoded_frames == 0) {
         QFile::remove(output_path_);
         SetError(QString());
-        ShowStatus(QStringLiteral("未录制到画面，未生成文件"), false, false);
+        ShowStatus(QStringLiteral("未录制到画面，未生成文件"), false, 8000);
     } else {
         SetError(QString());
-        ShowStatus(QStringLiteral("已保存：%1").arg(output_path_), false, false);
+        ShowStatus(QStringLiteral("已保存：%1").arg(output_path_), false, 8000);
 
         // The next run must not reuse the file that was just written. Only
         // rotate the name while the field still holds our own suggestion;
@@ -1084,10 +1074,6 @@ void MainWindow::FinalizeRecording() {
             output_edit_->setText(auto_path_);
         }
     }
-
-    // The status area now reports the recording outcome; the idle preview
-    // must not replace it with a transient error message.
-    status_message_locked_ = true;
 
     if (std::shared_ptr<const hmmob::PreviewFrame> frame =
             recorder_.LatestPreview()) {
@@ -1125,7 +1111,7 @@ void MainWindow::SetConfigEnabled(bool enabled) {
 void MainWindow::SetError(const QString& error) {
     last_error_ = error;
     if (!error.isEmpty()) {
-        ShowStatus(error, true, false);
+        ShowStatus(error, true, 8000);
     }
 }
 

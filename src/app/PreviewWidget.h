@@ -22,6 +22,10 @@ public:
 
     void SetBadgeText(const QString& text);
 
+    // Persistent error pill at the top-right of the preview. Empty clears it.
+    // Independent of the status line above the bottom bar.
+    void SetErrorBadge(const QString& text);
+
 protected:
     void paintEvent(QPaintEvent* event) override;
 
@@ -30,4 +34,5 @@ private:
     std::shared_ptr<const hmmob::PreviewFrame> frame_;
     QImage image_;
     QString badge_text_ = QStringLiteral("预览区域 · 2560 × 1440");
+    QString error_badge_;
 };

@@ -63,7 +63,10 @@ private:
 
     void OnDisplaySelectionChanged();
     void UpdateBadgeText();
-    void ShowStatus(const QString& text, bool error, bool transient);
+    // timeout_ms > 0 clears the line after that delay; 0 keeps it until
+    // another message replaces it. Preview errors never use this line.
+    void ShowStatus(const QString& text, bool error, int timeout_ms);
+    void ShowPreviewError(const QString& detail);
 
     void StartIdlePreview();
     void Tick();
@@ -129,9 +132,6 @@ private:
 
     bool has_display_ = false;
     bool preview_started_ = false;
-    // True while status_label_ shows a recording result (save, failure or
-    // start failure) that the idle preview must not overwrite.
-    bool status_message_locked_ = false;
     bool recording_ = false;
     bool stop_requested_ = false;
     bool closing_ = false;
@@ -144,6 +144,7 @@ private:
     // filename instead of keeping the user's choice.
     QString auto_path_;
     QString last_error_;
+    QString preview_error_detail_;
     std::shared_ptr<const hmmob::PreviewFrame> last_preview_;
     QElapsedTimer save_watchdog_;
 
