@@ -185,3 +185,54 @@ TEST_CASE("VideoProcessor resets after failed Initialize", "[integration]") {
     REQUIRE(processor.height() == 0);
     REQUIRE_FALSE(processor.Convert(nullptr, nullptr));
 }
+
+TEST_CASE("VideoProcessor scales BGRA to a smaller BGRA output", "[integration]") {
+    hmmob::D3D11Device d3d;
+    if (!d3d.Create()) {
+        SKIP("D3D11 device unavailable");
+    }
+
+    hmmob::VideoProcessor converter;
+    REQUIRE(converter.Initialize(d3d, 64, 64, 32, 32, DXGI_FORMAT_B8G8R8A8_UNORM));
+    REQUIRE(converter.output_width() == 32);
+    REQUIRE(converter.output_height() == 32);
+    REQUIRE(converter.output_format() == DXGI_FORMAT_B8G8R8A8_UNORM);
+
+    std::vector<uint8_t> red(static_cast<size_t>(64) * 64 * 4);
+    for (int y = 0; y < 64; ++y) {
+        for (int x = 0; x < 64; ++x) {
+            SetPixel(red, 64, x, y, 0, 0, 255, 255);  // BGRA red
+        }
+    }
+    auto input = CreateBgraTexture(d3d.device(), 64, 64, red);
+    REQUIRE(input.Get() != nullptr);
+    REQUIRE(converter.Convert(input.Get(), converter.output_texture()));
+
+    D3D11_TEXTURE2D_DESC staging_desc{};
+    staging_desc.Width = 32;
+    staging_desc.Height = 32;
+    staging_desc.MipLevels = 1;
+    staging_desc.ArraySize = 1;
+    staging_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    staging_desc.SampleDesc.Count = 1;
+    staging_desc.Usage = D3D11_USAGE_STAGING;
+    staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
+    REQUIRE(SUCCEEDED(d3d.device()->CreateTexture2D(&staging_desc, nullptr, &staging)));
+    d3d.context()->CopyResource(staging.Get(), converter.output_texture());
+
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    REQUIRE(SUCCEEDED(d3d.context()->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)));
+
+    const auto* row = static_cast<const uint8_t*>(mapped.pData) +
+                      16 * mapped.RowPitch + 16 * 4;
+    const int blue = row[0];
+    const int green = row[1];
+    const int red_channel = row[2];
+
+    d3d.context()->Unmap(staging.Get(), 0);
+
+    REQUIRE(blue < 16);
+    REQUIRE(green < 16);
+    REQUIRE(red_channel > 240);
+}

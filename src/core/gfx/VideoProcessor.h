@@ -9,14 +9,23 @@ class VideoProcessor {
 public:
     // Requires a successfully created D3D11Device. Re-initialization is
     // supported: any previously created resources are released first.
+    // Same-size BGRA -> NV12 conversion.
     [[nodiscard]] bool Initialize(D3D11Device& d3d, int width, int height);
-    // Converts into this object's output_texture(); `nv12` must equal
+    // Arbitrary input/output size with an NV12 or BGRA8 output texture.
+    [[nodiscard]] bool Initialize(D3D11Device& d3d, int input_width,
+                                  int input_height, int output_width,
+                                  int output_height,
+                                  DXGI_FORMAT output_format);
+    // Converts into this object's output_texture(); `output` must equal
     // output_texture(). The parameter is kept for API symmetry and may be
     // removed in Phase 1.
-    [[nodiscard]] bool Convert(ID3D11Texture2D* bgra, ID3D11Texture2D* nv12);
+    [[nodiscard]] bool Convert(ID3D11Texture2D* input, ID3D11Texture2D* output);
     ID3D11Texture2D* output_texture() const { return output_.Get(); }
-    int width() const { return width_; }
-    int height() const { return height_; }
+    int width() const { return input_width_; }
+    int height() const { return input_height_; }
+    int output_width() const { return output_width_; }
+    int output_height() const { return output_height_; }
+    DXGI_FORMAT output_format() const { return output_format_; }
 
 private:
     void Reset();
@@ -31,8 +40,11 @@ private:
     Microsoft::WRL::ComPtr<ID3D11VideoProcessorInputView> input_view_;
     Microsoft::WRL::ComPtr<ID3D11VideoProcessorOutputView> output_view_;
     ID3D11Texture2D* cached_input_ = nullptr;
-    int width_ = 0;
-    int height_ = 0;
+    int input_width_ = 0;
+    int input_height_ = 0;
+    int output_width_ = 0;
+    int output_height_ = 0;
+    DXGI_FORMAT output_format_ = DXGI_FORMAT_NV12;
     bool ready_ = false;
 };
 
