@@ -26,6 +26,11 @@ struct RecorderConfig {
     bool microphone = true;
     float system_gain = 1.0f;
     float mic_gain = 1.0f;
+    // WASAPI endpoint ids from WasapiCapture::EnumerateDevices. Empty selects
+    // the default endpoint of that flow; an id that no longer exists disables
+    // just that audio source and reports a warning.
+    std::string system_device_id;
+    std::string mic_device_id;
     // Audio track format. The container is chosen from output_path's
     // extension; sample_rate must be 44100 or 48000 and bitrate is used for
     // AAC only (96000..320000).

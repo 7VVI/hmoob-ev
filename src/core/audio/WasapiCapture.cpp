@@ -8,6 +8,12 @@
 #include <mmreg.h>
 #include <wrl/client.h>
 
+// DEFINE_PROPERTYKEY only emits a definition when INITGUID is set. Scope it to
+// this one header so PKEY_Device_FriendlyName links without a separate .lib.
+#define INITGUID
+#include <functiondiscoverykeys_devpkey.h>
+#undef INITGUID
+
 extern "C" {
 #include <libavutil/channel_layout.h>
 #include <libavutil/error.h>
@@ -18,6 +24,7 @@ extern "C" {
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -28,6 +35,67 @@ using Microsoft::WRL::ComPtr;
 void LogHr(const char* what, HRESULT hr) {
     std::fprintf(stderr, "WasapiCapture: %s failed 0x%08lx\n", what,
                  static_cast<unsigned long>(hr));
+}
+
+// Initializes COM only when this thread has no apartment yet, and balances
+// CoUninitialize in the destructor. An existing apartment (S_FALSE from a
+// second CoInitializeEx, or RPC_E_CHANGED_MODE for a different threading
+// model) is left untouched so enumeration never disturbs its owner.
+class ComApartment {
+public:
+    ComApartment() {
+        const HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        initialized_ = (hr == S_OK);
+        usable_ = SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE;
+        if (!usable_) {
+            LogHr("CoInitializeEx(enumeration)", hr);
+        }
+    }
+    ~ComApartment() {
+        if (initialized_) {
+            CoUninitialize();
+        }
+    }
+    ComApartment(const ComApartment&) = delete;
+    ComApartment& operator=(const ComApartment&) = delete;
+
+    bool usable() const { return usable_; }
+
+private:
+    bool initialized_ = false;
+    bool usable_ = false;
+};
+
+std::string WideToUtf8(const wchar_t* text) {
+    if (text == nullptr || *text == L'\0') {
+        return {};
+    }
+    const int length = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0,
+                                           nullptr, nullptr);
+    if (length <= 1) {
+        return {};
+    }
+    // length includes the terminating NUL; keep the string NUL-free.
+    std::string result(static_cast<size_t>(length - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text, -1, result.data(), length - 1,
+                        nullptr, nullptr);
+    return result;
+}
+
+std::wstring Utf8ToWide(const std::string& text) {
+    if (text.empty()) {
+        return {};
+    }
+    const int length = MultiByteToWideChar(CP_UTF8, 0, text.data(),
+                                           static_cast<int>(text.size()),
+                                           nullptr, 0);
+    if (length <= 0) {
+        return {};
+    }
+    std::wstring result(static_cast<size_t>(length), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                        result.data(), length);
+    return result;
 }
 
 void LogAv(const char* what, int error) {
@@ -258,11 +326,91 @@ struct WasapiCapture::Impl {
     }
 };
 
+std::vector<WasapiCapture::AudioDeviceInfo> WasapiCapture::EnumerateDevices(
+    bool loopback) {
+    std::vector<AudioDeviceInfo> devices;
+    ComApartment apartment;
+    if (!apartment.usable()) {
+        return devices;
+    }
+    const EDataFlow flow = loopback ? eRender : eCapture;
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr,
+                                  CLSCTX_ALL, IID_PPV_ARGS(&enumerator));
+    if (FAILED(hr)) {
+        LogHr("CoCreateInstance(MMDeviceEnumerator)", hr);
+        return devices;
+    }
+    // Resolve the default endpoint's id first: its absence is not an error,
+    // it just means no entry below is flagged as default.
+    std::wstring default_id;
+    {
+        ComPtr<IMMDevice> default_device;
+        if (SUCCEEDED(enumerator->GetDefaultAudioEndpoint(flow, eConsole,
+                                                          &default_device))) {
+            LPWSTR raw_id = nullptr;
+            if (SUCCEEDED(default_device->GetId(&raw_id)) && raw_id) {
+                default_id = raw_id;
+                CoTaskMemFree(raw_id);
+            }
+        }
+    }
+    ComPtr<IMMDeviceCollection> collection;
+    hr = enumerator->EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE, &collection);
+    if (FAILED(hr)) {
+        LogHr("EnumAudioEndpoints", hr);
+        return devices;
+    }
+    UINT32 count = 0;
+    if (FAILED(collection->GetCount(&count))) {
+        LogHr("IMMDeviceCollection::GetCount", E_FAIL);
+        return devices;
+    }
+    devices.reserve(count);
+    for (UINT32 i = 0; i < count; ++i) {
+        ComPtr<IMMDevice> device;
+        if (FAILED(collection->Item(i, &device))) {
+            continue;
+        }
+        std::wstring wide_id;
+        LPWSTR raw_id = nullptr;
+        if (SUCCEEDED(device->GetId(&raw_id)) && raw_id) {
+            wide_id = raw_id;
+            CoTaskMemFree(raw_id);
+        }
+        // Without an id the endpoint cannot be selected, so it is not listed.
+        if (wide_id.empty()) {
+            continue;
+        }
+        AudioDeviceInfo info;
+        info.id = WideToUtf8(wide_id.c_str());
+        info.is_default = wide_id == default_id;
+        ComPtr<IPropertyStore> store;
+        if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, &store))) {
+            PROPVARIANT value;
+            PropVariantInit(&value);
+            if (SUCCEEDED(store->GetValue(PKEY_Device_FriendlyName, &value)) &&
+                value.vt == VT_LPWSTR) {
+                info.name = WideToUtf8(value.pwszVal);
+            }
+            PropVariantClear(&value);
+        }
+        if (info.name.empty()) {
+            char fallback[32];
+            std::snprintf(fallback, sizeof(fallback), "Audio device %u", i + 1);
+            info.name = fallback;
+        }
+        devices.push_back(std::move(info));
+    }
+    return devices;
+}
+
 WasapiCapture::WasapiCapture() = default;
 
 WasapiCapture::~WasapiCapture() { Shutdown(); }
 
-bool WasapiCapture::Initialize(bool loopback, int sample_rate, int channels) {
+bool WasapiCapture::Initialize(bool loopback, int sample_rate, int channels,
+                               const std::string& device_id) {
     Shutdown();
     const auto fail_init = [this](HRESULT hr) {
         last_error_.store(static_cast<long>(hr), std::memory_order_relaxed);
@@ -299,12 +447,32 @@ bool WasapiCapture::Initialize(bool loopback, int sample_rate, int channels) {
         Shutdown();
         return fail_init(hr);
     }
-    hr = impl_->enumerator->GetDefaultAudioEndpoint(
-        loopback ? eRender : eCapture, eConsole, &impl_->device);
-    if (FAILED(hr)) {
-        LogHr("GetDefaultAudioEndpoint", hr);
-        Shutdown();
-        return fail_init(hr);
+    if (device_id.empty()) {
+        hr = impl_->enumerator->GetDefaultAudioEndpoint(
+            loopback ? eRender : eCapture, eConsole, &impl_->device);
+        if (FAILED(hr)) {
+            LogHr("GetDefaultAudioEndpoint", hr);
+            Shutdown();
+            return fail_init(hr);
+        }
+    } else {
+        const std::wstring wide_id = Utf8ToWide(device_id);
+        hr = wide_id.empty()
+                 ? E_INVALIDARG
+                 : impl_->enumerator->GetDevice(wide_id.c_str(),
+                                                &impl_->device);
+        if (FAILED(hr)) {
+            // The endpoint is gone (unplugged, disabled) or the id is
+            // malformed. No silent fallback to the default endpoint: the
+            // caller asked for a specific device and must decide what to do.
+            std::fprintf(stderr,
+                         "WasapiCapture: device \"%s\" is unavailable "
+                         "(0x%08lx)%s\n",
+                         device_id.c_str(), static_cast<unsigned long>(hr),
+                         hr == E_NOTFOUND ? "; endpoint not found" : "");
+            Shutdown();
+            return fail_init(hr);
+        }
     }
     hr = impl_->device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
                                  &impl_->client);

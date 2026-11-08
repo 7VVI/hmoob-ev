@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "core/audio/AudioCodec.h"
+#include "core/audio/WasapiCapture.h"
 #include "core/capture/CameraSource.h"
 #include "core/recorder/Recorder.h"
 
@@ -44,6 +45,11 @@ struct Options {
     std::string audio_format = "aac";
     int sample_rate = 48000;
     int audio_bitrate = 192000;
+    bool list_audio_devices = false;
+    // Empty = default endpoint; all digits = index into the enumerated list;
+    // anything else = an endpoint id.
+    std::string system_device;
+    std::string mic_device;
 };
 
 enum class ParseResult { Ok, Help, Error };
@@ -72,6 +78,9 @@ void PrintUsage(std::FILE* stream) {
                  "  --audio-format <name>   aac or pcm (default: aac)\n"
                  "  --sample-rate <n>       audio sample rate, 44100 or 48000 (default: 48000)\n"
                  "  --audio-bitrate <bps>   AAC bitrate, 96000..320000 (default: 192000)\n"
+                 "  --list-audio-devices    list microphone and loopback devices and exit\n"
+                 "  --system-device <v>     loopback device: 0-based index or endpoint id\n"
+                 "  --mic-device <v>        microphone device: 0-based index or endpoint id\n"
                  "  -h, --help              show this help and exit\n");
 }
 
@@ -255,6 +264,22 @@ ParseResult Parse(int argc, char** argv, Options& options) {
                 std::fprintf(stderr, "invalid value for --audio-bitrate\n");
                 return ParseResult::Error;
             }
+        } else if (arg == "--list-audio-devices") {
+            options.list_audio_devices = true;
+        } else if (arg == "--system-device") {
+            const char* v = next("--system-device");
+            if (!v || *v == '\0') {
+                std::fprintf(stderr, "invalid value for --system-device\n");
+                return ParseResult::Error;
+            }
+            options.system_device = v;
+        } else if (arg == "--mic-device") {
+            const char* v = next("--mic-device");
+            if (!v || *v == '\0') {
+                std::fprintf(stderr, "invalid value for --mic-device\n");
+                return ParseResult::Error;
+            }
+            options.mic_device = v;
         } else {
             std::fprintf(stderr, "unknown option: %s\n", arg.c_str());
             return ParseResult::Error;
@@ -347,6 +372,59 @@ HWND SelectWindow(int index, std::string& error) {
     return chosen.window;
 }
 
+bool IsAllDigits(const std::string& text) {
+    return !text.empty() &&
+           text.find_first_not_of("0123456789") == std::string::npos;
+}
+
+void PrintAudioDevices(bool loopback) {
+    std::printf("%s:\n", loopback ? "Speakers (loopback)" : "Microphones");
+    const std::vector<hmmob::WasapiCapture::AudioDeviceInfo> devices =
+        hmmob::WasapiCapture::EnumerateDevices(loopback);
+    if (devices.empty()) {
+        std::printf("  (none)\n");
+        return;
+    }
+    for (size_t i = 0; i < devices.size(); ++i) {
+        std::printf("  [%zu] %s%s\n      id: %s\n", i, devices[i].name.c_str(),
+                    devices[i].is_default ? " (default)" : "",
+                    devices[i].id.c_str());
+    }
+}
+
+// Resolves a --system-device/--mic-device value: all digits select that
+// 0-based index from the enumerated list, anything else is an endpoint id.
+bool ResolveAudioDevice(const std::string& value, bool loopback,
+                        std::string& device_id) {
+    if (!IsAllDigits(value)) {
+        device_id = value;
+        return true;
+    }
+    int index = 0;
+    if (!ParseInt(value.c_str(), index)) {
+        std::fprintf(stderr, "invalid device index %s\n", value.c_str());
+        return false;
+    }
+    const std::vector<hmmob::WasapiCapture::AudioDeviceInfo> devices =
+        hmmob::WasapiCapture::EnumerateDevices(loopback);
+    if (index < 0 || index >= static_cast<int>(devices.size())) {
+        const std::string range =
+            devices.empty()
+                ? "no device found"
+                : "0.." + std::to_string(devices.size() - 1);
+        std::fprintf(stderr, "%s %d is out of range (%s)\n",
+                     loopback ? "--system-device" : "--mic-device", index,
+                     range.c_str());
+        PrintAudioDevices(loopback);
+        return false;
+    }
+    device_id = devices[static_cast<size_t>(index)].id;
+    std::printf("selected %s [%d] %s\n",
+                loopback ? "loopback device" : "microphone", index,
+                devices[static_cast<size_t>(index)].name.c_str());
+    return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -371,6 +449,11 @@ int main(int argc, char** argv) {
         for (size_t i = 0; i < devices.size(); ++i) {
             std::printf("  [%zu] %s\n", i, devices[i].name.c_str());
         }
+        return 0;
+    }
+    if (options.list_audio_devices) {
+        PrintAudioDevices(false);
+        PrintAudioDevices(true);
         return 0;
     }
     if (options.codec != "hevc" && options.codec != "h264") {
@@ -471,6 +554,17 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    std::string system_device_id;
+    std::string mic_device_id;
+    if (!options.system_device.empty() &&
+        !ResolveAudioDevice(options.system_device, true, system_device_id)) {
+        return 1;
+    }
+    if (!options.mic_device.empty() &&
+        !ResolveAudioDevice(options.mic_device, false, mic_device_id)) {
+        return 1;
+    }
+
     hmmob::RecorderConfig config;
     config.display_index = options.display;
     if (options.has_camera) {
@@ -500,6 +594,8 @@ int main(int argc, char** argv) {
     config.microphone = options.audio && options.microphone;
     config.system_gain = options.system_volume;
     config.mic_gain = options.mic_volume;
+    config.system_device_id = system_device_id;
+    config.mic_device_id = mic_device_id;
     config.audio_codec = options.audio_format == "pcm"
                              ? hmmob::AudioCodec::PcmS16Le
                              : hmmob::AudioCodec::Aac;

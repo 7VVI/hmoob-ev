@@ -348,7 +348,8 @@ void Recorder::Impl::Run() {
 
     if (config.system_audio) {
         system_ok = system_capture.Initialize(true, audio_sample_rate,
-                                              kAudioChannels) &&
+                                              kAudioChannels,
+                                              config.system_device_id) &&
                     system_capture.Start();
         if (!system_ok) {
             std::fprintf(stderr, "warning: system audio unavailable (0x%08lx)\n",
@@ -357,7 +358,8 @@ void Recorder::Impl::Run() {
     }
     if (config.microphone) {
         mic_ok = mic_capture.Initialize(false, audio_sample_rate,
-                                        kAudioChannels) &&
+                                        kAudioChannels,
+                                        config.mic_device_id) &&
                  mic_capture.Start();
         if (!mic_ok) {
             std::fprintf(stderr, "warning: microphone unavailable (0x%08lx)\n",
