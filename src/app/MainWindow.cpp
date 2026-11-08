@@ -473,10 +473,12 @@ void MainWindow::StartSmoke(int seconds, const QString& path) {
     mic_gain_->setValue(1.0);
 
     // A hung smoke run must still terminate with a diagnosable result instead
-    // of leaving a window behind for the automation to time out on.
+    // of leaving a window behind for the automation to time out on. The
+    // watchdog outlives the requested duration: 300 ms start delay plus the
+    // recording itself plus a 30 s grace period (startup, muxer flush).
     smoke_watchdog_ = new QTimer(this);
     smoke_watchdog_->setSingleShot(true);
-    smoke_watchdog_->setInterval(30000);
+    smoke_watchdog_->setInterval(300 + smoke_seconds_ * 1000 + 30000);
     connect(smoke_watchdog_, &QTimer::timeout, this, [this] {
         FinishSmoke(recorder_.stats(), QStringLiteral("smoke_timeout"));
     });
