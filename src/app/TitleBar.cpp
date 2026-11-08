@@ -1,11 +1,13 @@
 #include "app/TitleBar.h"
 
 #include <QAbstractButton>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QScreen>
 
 #include "app/IconRenderer.h"
 
@@ -145,7 +147,30 @@ void TitleBar::mousePressEvent(QMouseEvent* event) {
 
 void TitleBar::mouseMoveEvent(QMouseEvent* event) {
     if (dragging_ && (event->buttons() & Qt::LeftButton)) {
-        window()->move(event->globalPosition().toPoint() - drag_offset_);
+        const QPoint target =
+            event->globalPosition().toPoint() - drag_offset_;
+        // Keep enough of the caption on the nearest screen that the window can
+        // always be grabbed and moved back.
+        constexpr int kVisible = 80;
+        QScreen* screen = QGuiApplication::screenAt(
+            event->globalPosition().toPoint());
+        if (!screen) {
+            screen = QGuiApplication::screenAt(window()->frameGeometry().center());
+        }
+        if (!screen) {
+            screen = QGuiApplication::primaryScreen();
+        }
+        if (screen) {
+            const QRect available = screen->availableGeometry();
+            const int max_x = available.right() - kVisible;
+            const int min_x =
+                available.left() - window()->width() + kVisible;
+            const int max_y = available.bottom() - 40;
+            window()->move(qBound(min_x, target.x(), max_x),
+                           qBound(available.top(), target.y(), max_y));
+        } else {
+            window()->move(target);
+        }
         event->accept();
         return;
     }

@@ -14,6 +14,7 @@
 
 class QAbstractButton;
 class QCloseEvent;
+class QEvent;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -46,6 +47,7 @@ protected:
     void closeEvent(QCloseEvent* event) override;
     void showEvent(QShowEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
+    void changeEvent(QEvent* event) override;
     bool nativeEvent(const QByteArray& eventType, void* message,
                      qintptr* result) override;
 
@@ -86,7 +88,10 @@ private:
     void UpdateAudioUi(bool microphone);
     void SetAdvancedExpanded(bool expanded);
 
+    void UpdateStatusGeometry();
     void ToggleMaximize();
+    void SyncMaximizedState();
+    void SetIdleSuspended(bool suspended);
     void ApplyWindowEffects();
 
     hmmob::Recorder recorder_;
@@ -137,8 +142,8 @@ private:
     bool stop_requested_ = false;
     bool closing_ = false;
     bool maximized_ = false;
+    bool minimized_ = false;
     int tick_count_ = 0;
-    QRect normal_geometry_;
     QString output_path_;
     // Last path this window generated itself (as opposed to one the user
     // typed or picked). Decides whether the next run may regenerate a fresh
@@ -148,6 +153,7 @@ private:
     QString preview_error_detail_;
     std::shared_ptr<const hmmob::PreviewFrame> last_preview_;
     QElapsedTimer save_watchdog_;
+    QElapsedTimer record_started_;
 
     bool smoke_ = false;
     bool smoke_finished_ = false;

@@ -1,10 +1,12 @@
 #include "app/IconRenderer.h"
 
 #include <QFont>
+#include <QGuiApplication>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
 #include <QPolygonF>
+#include <QScreen>
 #include <QtMath>
 
 namespace {
@@ -391,7 +393,10 @@ void Paint(QPainter& painter, Icon icon, const QRectF& rect,
 }
 
 QPixmap Pixmap(Icon icon, int size, const QColor& color, qreal stroke) {
-    const qreal dpr = 2.0;
+    qreal dpr = 1.0;
+    if (const QScreen* screen = QGuiApplication::primaryScreen()) {
+        dpr = qMax<qreal>(1.0, screen->devicePixelRatio());
+    }
     QPixmap pixmap(qRound(size * dpr), qRound(size * dpr));
     pixmap.setDevicePixelRatio(dpr);
     pixmap.fill(Qt::transparent);

@@ -15,6 +15,9 @@ public:
     void SetActive(bool active);
     [[nodiscard]] bool IsActive() const { return active_; }
 
+    // Freezes/resumes the animation without changing the lit state.
+    void SetPaused(bool paused);
+
     QSize sizeHint() const override;
 
 protected:
@@ -24,8 +27,8 @@ private:
     void Tick();
 
     QTimer* timer_ = nullptr;
-    int seed_ = 0;
     int lit_ = 5;
     int target_lit_ = 5;
     bool active_ = true;
+    bool paused_ = false;
 };

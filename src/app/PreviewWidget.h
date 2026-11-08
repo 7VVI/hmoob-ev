@@ -33,6 +33,6 @@ private:
     // Declared before image_ so the pixel buffer outlives the QImage.
     std::shared_ptr<const hmmob::PreviewFrame> frame_;
     QImage image_;
-    QString badge_text_ = QStringLiteral("预览区域 · 2560 × 1440");
+    QString badge_text_ = QStringLiteral("预览区域");
     QString error_badge_;
 };

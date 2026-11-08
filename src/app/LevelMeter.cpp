@@ -13,8 +13,7 @@ constexpr int kBarHeight = 22;
 }  // namespace
 
 LevelMeter::LevelMeter(int seed, QWidget* parent)
-    : QWidget(parent), seed_(seed), lit_(4 + seed % 3),
-      target_lit_(4 + seed % 3) {
+    : QWidget(parent), lit_(4 + seed % 3), target_lit_(4 + seed % 3) {
     setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     setAttribute(Qt::WA_TransparentForMouseEvents, true);
     setFixedSize(sizeHint());
@@ -30,11 +29,25 @@ QSize LevelMeter::sizeHint() const {
 
 void LevelMeter::SetActive(bool active) {
     active_ = active;
+    if (active_ && !paused_) {
+        timer_->start();
+    } else if (!active_) {
+        timer_->stop();
+    }
     update();
 }
 
+void LevelMeter::SetPaused(bool paused) {
+    paused_ = paused;
+    if (paused_) {
+        timer_->stop();
+    } else if (active_) {
+        timer_->start();
+    }
+}
+
 void LevelMeter::Tick() {
-    if (!active_) {
+    if (!active_ || paused_) {
         return;
     }
     // Wander between four and seven lit bars. The step is deliberately small

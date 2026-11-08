@@ -8,6 +8,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QEvent>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileDialog>
@@ -20,6 +21,8 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScreen>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QShowEvent>
 #include <QSignalBlocker>
 #include <QStandardPaths>
@@ -46,6 +49,7 @@
 #include "app/NavTabButton.h"
 #include "app/PreviewWidget.h"
 #include "app/TitleBar.h"
+#include "app/UiFont.h"
 #include "core/gfx/D3D11Device.h"
 
 #ifndef DWMWA_WINDOW_CORNER_PREFERENCE
@@ -103,6 +107,14 @@ QWidget#advancedBar { background: #F7F9FC; border-top: 1px solid #F0F2F7; border
 QPushButton#advancedButton { background: transparent; border: none; border-radius: 0px; }
 QPushButton#advancedButton:hover { background: #F0F3F8; }
 QWidget#advancedContent { background: transparent; }
+QScrollArea#settingsScroll { background: transparent; border: none; }
+QScrollArea#settingsScroll > QWidget > QWidget { background: transparent; }
+QWidget#scrollContent { background: transparent; }
+QScrollBar:vertical { background: transparent; width: 8px; margin: 0px; }
+QScrollBar::handle:vertical { background: #D5DBE5; border-radius: 4px; min-height: 28px; }
+QScrollBar::handle:vertical:hover { background: #C2C9D6; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; background: transparent; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
 )";
 
 QString FormatDuration(int64_t elapsed_us) {
@@ -124,15 +136,6 @@ QString FormatSize(int64_t bytes) {
     return QStringLiteral("%1 MB").arg(mb, 0, 'f', 1);
 }
 
-QFont UiFont(int pixel_size, QFont::Weight weight = QFont::Normal) {
-    QFont font;
-    font.setFamilies({QStringLiteral("Microsoft YaHei UI"),
-                      QStringLiteral("Microsoft YaHei")});
-    font.setPixelSize(pixel_size);
-    font.setWeight(weight);
-    return font;
-}
-
 }  // namespace
 
 MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
@@ -144,16 +147,14 @@ MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
                    Qt::WindowMaximizeButtonHint | Qt::WindowSystemMenuHint);
     setStyleSheet(QString::fromUtf8(kStyleSheet));
     resize(1400, 830);
-    setMinimumSize(1180, 820);
+    setMinimumSize(1024, 680);
 
     BuildUi();
     PopulateDisplays();
     ConnectSignals();
 
     const QRect available = screen()->availableGeometry();
-    move(available.center() -
-         QPoint(width() / 2, height() / 2));
-    normal_geometry_ = geometry();
+    move(available.center() - QPoint(width() / 2, height() / 2));
 }
 
 MainWindow::~MainWindow() { preview_source_.Stop(); }
@@ -176,15 +177,25 @@ void MainWindow::BuildUi() {
     preview_ = new PreviewWidget(content);
     content_layout->addWidget(preview_, 1);
 
-    auto* column = new QWidget(content);
-    column->setFixedWidth(kRightColumnWidth);
+    auto* column = new QWidget;
+    column->setObjectName(QStringLiteral("scrollContent"));
     auto* column_layout = new QVBoxLayout(column);
     column_layout->setContentsMargins(0, 0, 0, 0);
     column_layout->setSpacing(12);
     column_layout->addWidget(BuildContentCard(), 1);
     column_layout->addWidget(BuildAudioCard(), 1);
     column_layout->addWidget(BuildVideoCard(), 1);
-    content_layout->addWidget(column, 0);
+
+    auto* settings_scroll = new QScrollArea(content);
+    settings_scroll->setObjectName(QStringLiteral("settingsScroll"));
+    settings_scroll->setWidgetResizable(true);
+    settings_scroll->setFrameShape(QFrame::NoFrame);
+    settings_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    settings_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    settings_scroll->setWidget(column);
+    settings_scroll->setFixedWidth(kRightColumnWidth);
+    settings_scroll->viewport()->setAutoFillBackground(false);
+    content_layout->addWidget(settings_scroll, 0);
 
     root->addWidget(content, 1);
     root->addWidget(BuildBottomBar());
@@ -847,6 +858,7 @@ void MainWindow::UpdateBadgeText() {
 
 void MainWindow::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
+    UpdateStatusGeometry();
     static bool effects_applied = false;
     if (!effects_applied) {
         effects_applied = true;
@@ -864,15 +876,20 @@ void MainWindow::showEvent(QShowEvent* event) {
 
 void MainWindow::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
-    if (status_label_) {
-        status_label_->setGeometry(
-            34, height() - kBottomBarHeight - 26, width() - 60, kStatusHeight);
-        status_label_->raise();
+    UpdateStatusGeometry();
+}
+
+void MainWindow::UpdateStatusGeometry() {
+    if (!status_label_) {
+        return;
     }
+    status_label_->setGeometry(
+        34, height() - kBottomBarHeight - 26, width() - 60, kStatusHeight);
+    status_label_->raise();
 }
 
 void MainWindow::StartIdlePreview() {
-    if (!has_display_ || recording_) {
+    if (!has_display_ || recording_ || isMinimized()) {
         return;
     }
     std::string error;
@@ -992,6 +1009,7 @@ bool MainWindow::StartRecording() {
     stop_requested_ = false;
     tick_count_ = 0;
     SetConfigEnabled(false);
+    record_started_.start();
     start_button_->SetRecording(true);
     start_button_->SetBusy(false);
     start_button_->setEnabled(true);
@@ -1004,6 +1022,12 @@ bool MainWindow::StartRecording() {
 
 void MainWindow::StopRecording() {
     if (!recording_) {
+        return;
+    }
+    // A double-click on the start button produces a second click right after
+    // the recording began; ignore it instead of starting and instantly
+    // stopping. Real users cannot react faster than this window either.
+    if (record_started_.isValid() && record_started_.elapsed() < 800) {
         return;
     }
     recorder_.RequestStop();
@@ -1071,6 +1095,7 @@ void MainWindow::FinalizeRecording() {
     recording_ = false;
     stop_requested_ = false;
     save_watchdog_.invalidate();
+    record_started_.invalidate();
     // The tick timer keeps running: it drives the idle preview from here on.
 
     const hmmob::RecorderStats stats = recorder_.stats();
@@ -1113,8 +1138,13 @@ void MainWindow::FinalizeRecording() {
     }
 
     // Resume the idle preview now that the recorder has released the capture
-    // path and the controls are usable again.
+    // path and the controls are usable again. If the window is minimized the
+    // preview is restarted on restore instead, and the poll timer must not
+    // keep ticking invisibly.
     StartIdlePreview();
+    if (isMinimized()) {
+        poll_timer_->stop();
+    }
 
     if (smoke_) {
         FinishSmoke(stats, error);
@@ -1225,16 +1255,58 @@ void MainWindow::FinishSmoke(const hmmob::RecorderStats& stats,
 }
 
 void MainWindow::ToggleMaximize() {
-    if (!maximized_) {
-        normal_geometry_ = geometry();
-        setGeometry(screen()->availableGeometry());
-        maximized_ = true;
+    // Native maximize/restore, so Win+Up, the system menu and the taskbar all
+    // agree with our caption button. Windows keeps the normal placement.
+    if (isMaximized()) {
+        showNormal();
     } else {
-        setGeometry(normal_geometry_);
-        maximized_ = false;
+        showMaximized();
     }
+    SyncMaximizedState();
+}
+
+void MainWindow::SyncMaximizedState() {
+    const bool maximized = isMaximized();
+    if (maximized == maximized_) {
+        return;
+    }
+    maximized_ = maximized;
     title_bar_->SetMaximized(maximized_);
     ApplyWindowEffects();
+}
+
+void MainWindow::SetIdleSuspended(bool suspended) {
+    if (mic_meter_) {
+        mic_meter_->SetPaused(suspended);
+    }
+    if (system_meter_) {
+        system_meter_->SetPaused(suspended);
+    }
+    if (suspended) {
+        if (!recording_) {
+            poll_timer_->stop();
+            preview_source_.Stop();
+        }
+        return;
+    }
+    if (!recording_) {
+        poll_timer_->start();
+        StartIdlePreview();
+    }
+}
+
+void MainWindow::changeEvent(QEvent* event) {
+    QWidget::changeEvent(event);
+    if (event->type() != QEvent::WindowStateChange) {
+        return;
+    }
+    SyncMaximizedState();
+    const bool minimized = isMinimized();
+    if (minimized == minimized_) {
+        return;
+    }
+    minimized_ = minimized;
+    SetIdleSuspended(minimized_);
 }
 
 void MainWindow::ApplyWindowEffects() {
@@ -1272,19 +1344,40 @@ bool MainWindow::nativeEvent(const QByteArray& eventType, void* message,
 #ifdef Q_OS_WIN
     if (eventType == "windows_generic_MSG") {
         auto* msg = static_cast<MSG*>(message);
+        const HWND hwnd = msg->hwnd;
         if (msg->message == WM_NCCALCSIZE && msg->wParam == TRUE) {
-            // WS_THICKFRAME is only present to enable the native resize loop;
-            // the whole window rect must remain client area.
+            // WS_THICKFRAME is only present to enable the native resize loop.
+            // Normally the whole window rect is client area; when Windows
+            // maximizes us, clamp the client to the monitor work area instead
+            // so the taskbar stays visible.
+            if (IsZoomed(hwnd)) {
+                auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(msg->lParam);
+                MONITORINFO info{};
+                info.cbSize = sizeof(info);
+                if (GetMonitorInfo(
+                        MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
+                        &info)) {
+                    params->rgrc[0] = info.rcWork;
+                }
+            }
             *result = 0;
             return true;
         }
-        if (msg->message == WM_NCHITTEST && !maximized_) {
-            const HWND hwnd = reinterpret_cast<HWND>(winId());
+        if (msg->message == WM_SYSCOMMAND) {
+            const WPARAM command = msg->wParam & 0xFFF0;
+            if (command == SC_MAXIMIZE || command == SC_RESTORE) {
+                QTimer::singleShot(0, this, [this] { SyncMaximizedState(); });
+            }
+        }
+        if (msg->message == WM_NCHITTEST && !IsZoomed(hwnd)) {
             RECT window_rect{};
             GetWindowRect(hwnd, &window_rect);
             const int x = GET_X_LPARAM(msg->lParam);
             const int y = GET_Y_LPARAM(msg->lParam);
-            const int border = kWindowResizeBorder;
+            const UINT dpi = GetDpiForWindow(hwnd);
+            const int border =
+                MulDiv(kWindowResizeBorder, dpi > 0 ? static_cast<int>(dpi) : 96,
+                       96);
             const bool left = x >= window_rect.left &&
                               x < window_rect.left + border;
             const bool right = x <= window_rect.right &&

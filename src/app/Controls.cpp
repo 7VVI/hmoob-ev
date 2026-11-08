@@ -5,19 +5,7 @@
 #include <QPaintEvent>
 
 #include "app/IconRenderer.h"
-
-namespace {
-
-QFont UiFont(int pixel_size, QFont::Weight weight = QFont::Normal) {
-    QFont font;
-    font.setFamilies({QStringLiteral("Microsoft YaHei UI"),
-                      QStringLiteral("Microsoft YaHei")});
-    font.setPixelSize(pixel_size);
-    font.setWeight(weight);
-    return font;
-}
-
-}  // namespace
+#include "app/UiFont.h"
 
 StyledComboBox::StyledComboBox(QWidget* parent) : QComboBox(parent) {
     setCursor(Qt::PointingHandCursor);
