@@ -9,8 +9,10 @@
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -121,7 +123,8 @@ void MainWindow::BuildUi() {
     form->addRow(QStringLiteral("麦克风"), mic_row);
 
     auto* output_row = new QHBoxLayout;
-    output_edit_ = new QLineEdit(DefaultOutputPath(), this);
+    auto_path_ = DefaultOutputPath();
+    output_edit_ = new QLineEdit(auto_path_, this);
     output_edit_->setPlaceholderText(QStringLiteral("输出 MP4 路径"));
     browse_button_ = new QPushButton(QStringLiteral("浏览…"), this);
     output_row->addWidget(output_edit_, 1);
@@ -248,8 +251,28 @@ bool MainWindow::StartRecording() {
         return false;
     }
 
+    const QString path = output_edit_->text().trimmed();
+    // Never destroy an existing file without asking. Smoke runs are scripted
+    // and own their path, so they skip the prompt.
+    if (!smoke_ && QFileInfo::exists(path)) {
+        const QMessageBox::StandardButton answer = QMessageBox::question(
+            this, QStringLiteral("Hmmob EV 录制"),
+            QStringLiteral("文件已存在，是否覆盖？\n%1")
+                .arg(QDir::toNativeSeparators(path)),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer != QMessageBox::Yes) {
+            return false;
+        }
+    }
+
     const hmmob::RecorderConfig config = BuildConfig();
-    output_path_ = output_edit_->text().trimmed();
+    output_path_ = path;
+
+    // A new attempt must never show the previous run's last frame, even if
+    // initialization fails.
+    preview_->SetFrame(nullptr);
+    last_preview_.reset();
+    save_watchdog_.invalidate();
 
     std::string error;
     QApplication::setOverrideCursor(Qt::WaitCursor);
@@ -266,7 +289,6 @@ bool MainWindow::StartRecording() {
     recording_ = true;
     stop_requested_ = false;
     tick_count_ = 0;
-    last_preview_.reset();
     SetConfigEnabled(false);
     stop_button_->setEnabled(true);
     SetAudioLabel(hmmob::RecorderStats{});
@@ -281,6 +303,7 @@ void MainWindow::StopRecording() {
     }
     recorder_.RequestStop();
     stop_requested_ = true;
+    save_watchdog_.start();
     stop_button_->setEnabled(false);
     status_label_->setText(QStringLiteral("正在保存…"));
 }
@@ -295,6 +318,14 @@ void MainWindow::Tick() {
     if (frame && frame != last_preview_) {
         last_preview_ = frame;
         preview_->SetFrame(std::move(frame));
+    }
+
+    // Stop() must not block the GUI, but a save that never completes must not
+    // look like a hung window either. Keep the stopping state: only warn.
+    if (stop_requested_ && !recorder_.Finished() &&
+        save_watchdog_.isValid() && save_watchdog_.elapsed() >= 15000) {
+        status_label_->setText(
+            QStringLiteral("正在保存…（已超过 15 秒，仍在等待）"));
     }
 
     if (++tick_count_ % 8 == 0) {
@@ -319,6 +350,7 @@ void MainWindow::FinalizeRecording() {
     }
     recording_ = false;
     stop_requested_ = false;
+    save_watchdog_.invalidate();
     poll_timer_->stop();
 
     const hmmob::RecorderStats stats = recorder_.stats();
@@ -347,6 +379,18 @@ void MainWindow::FinalizeRecording() {
                 .arg(output_path_)
                 .arg(mib, 0, 'f', 1)
                 .arg(seconds, 0, 'f', 2));
+
+        // The next run must not reuse the file that was just written. Only
+        // rotate the name while the field still holds our own suggestion;
+        // a path the user typed or picked is kept.
+        if (output_edit_->text().trimmed() == auto_path_) {
+            QString next = DefaultOutputPath();
+            if (next == output_path_) {
+                next = next.chopped(4) + QStringLiteral("-2.mp4");
+            }
+            auto_path_ = next;
+            output_edit_->setText(auto_path_);
+        }
     }
 
     if (std::shared_ptr<const hmmob::PreviewFrame> frame =
@@ -428,6 +472,16 @@ void MainWindow::StartSmoke(int seconds, const QString& path) {
     system_gain_->setValue(1.0);
     mic_gain_->setValue(1.0);
 
+    // A hung smoke run must still terminate with a diagnosable result instead
+    // of leaving a window behind for the automation to time out on.
+    smoke_watchdog_ = new QTimer(this);
+    smoke_watchdog_->setSingleShot(true);
+    smoke_watchdog_->setInterval(30000);
+    connect(smoke_watchdog_, &QTimer::timeout, this, [this] {
+        FinishSmoke(recorder_.stats(), QStringLiteral("smoke_timeout"));
+    });
+    smoke_watchdog_->start();
+
     QTimer::singleShot(300, this, [this] {
         if (!StartRecording()) {
             FinishSmoke(recorder_.stats(), last_error_);
@@ -444,6 +498,9 @@ void MainWindow::FinishSmoke(const hmmob::RecorderStats& stats,
         return;
     }
     smoke_finished_ = true;
+    if (smoke_watchdog_) {
+        smoke_watchdog_->stop();
+    }
 
     QFile file(smoke_path_ + QStringLiteral(".smoke.txt"));
     if (file.open(QIODevice::WriteOnly | QIODevice::Text |
@@ -466,25 +523,42 @@ void MainWindow::FinishSmoke(const hmmob::RecorderStats& stats,
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
+    if (closing_) {
+        event->ignore();
+        return;
+    }
     if (!recorder_.Running()) {
         event->accept();
         return;
     }
 
+    // Set before the modal question so a second close request cannot open a
+    // second confirmation dialog.
+    closing_ = true;
     const QMessageBox::StandardButton answer = QMessageBox::question(
         this, QStringLiteral("Hmmob EV 录制"),
         QStringLiteral("正在录制，确定停止并退出？"),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
     if (answer != QMessageBox::Yes) {
+        closing_ = false;
+        if (recording_) {
+            stop_button_->setEnabled(!stop_requested_);
+            if (!poll_timer_->isActive()) {
+                poll_timer_->start();
+            }
+        }
         event->ignore();
         return;
     }
 
+    poll_timer_->stop();
+    start_button_->setEnabled(false);
+    stop_button_->setEnabled(false);
     recorder_.RequestStop();
     QElapsedTimer timer;
     timer.start();
     while (!recorder_.Finished() && timer.elapsed() < 10000) {
-        QCoreApplication::processEvents();
+        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
         QThread::msleep(50);
     }
     event->accept();

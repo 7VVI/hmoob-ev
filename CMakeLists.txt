@@ -78,18 +78,26 @@ if(NOT EXISTS "${_qt_plugins_dir}")
   set(_qt_plugins_dir "${_qt_prefix}/plugins")
 endif()
 
-if(EXISTS "${_qt_plugins_dir}/platforms")
-  add_custom_command(TARGET hmmob_ev_app POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-      "${_qt_plugins_dir}/platforms"
-      "$<TARGET_FILE_DIR:hmmob_ev_app>/platforms"
+if(NOT EXISTS "${_qt_plugins_dir}/platforms")
+  message(FATAL_ERROR
+    "Qt platform plugins not found at '${_qt_plugins_dir}/platforms'. "
+    "The Qt runtime cannot start without them; check QT6_INSTALL_PLUGINS "
+    "and the vcpkg Qt installation.")
+endif()
+
+set(_qt_deploy_commands
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${_qt_plugins_dir}/platforms"
+    "$<TARGET_FILE_DIR:hmmob_ev_app>/platforms")
+if(EXISTS "${_qt_plugins_dir}/styles")
+  list(APPEND _qt_deploy_commands
     COMMAND ${CMAKE_COMMAND} -E copy_directory
       "${_qt_plugins_dir}/styles"
-      "$<TARGET_FILE_DIR:hmmob_ev_app>/styles"
-    COMMENT "Deploying Qt platform and style plugins")
-else()
-  message(WARNING "Qt plugin directory not found: ${_qt_plugins_dir}")
+      "$<TARGET_FILE_DIR:hmmob_ev_app>/styles")
 endif()
+add_custom_command(TARGET hmmob_ev_app POST_BUILD
+  ${_qt_deploy_commands}
+  COMMENT "Deploying Qt platform and style plugins")
 
 include(CTest)
 if(BUILD_TESTING)

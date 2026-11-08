@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QString>
 #include <QWidget>
 #include <memory>
@@ -76,13 +77,20 @@ private:
     bool has_display_ = false;
     bool recording_ = false;
     bool stop_requested_ = false;
+    bool closing_ = false;
     int tick_count_ = 0;
     QString output_path_;
+    // Last path this window generated itself (as opposed to one the user
+    // typed or picked). Decides whether the next run may regenerate a fresh
+    // filename instead of keeping the user's choice.
+    QString auto_path_;
     QString last_error_;
     std::shared_ptr<const hmmob::PreviewFrame> last_preview_;
+    QElapsedTimer save_watchdog_;
 
     bool smoke_ = false;
     bool smoke_finished_ = false;
     int smoke_seconds_ = 0;
     QString smoke_path_;
+    QTimer* smoke_watchdog_ = nullptr;
 };

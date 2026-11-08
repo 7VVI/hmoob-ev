@@ -53,7 +53,7 @@ $cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7
 .\build\release\Release\hmmob_ev_app.exe
 ```
 
-自动化验证可使用 `--smoke <秒数> <输出路径>`：窗口显示后自动按 60 fps / HEVC / 音频开启开始录制，到时停止，并把统计写入 `<输出路径>.smoke.txt` 后退出（成功退出码 0，失败 1）。
+自动化验证可使用 `--smoke <秒数> <输出路径>`：窗口显示后自动按 60 fps / HEVC / 音频开启开始录制，到时停止，并把统计写入 `<输出路径>.smoke.txt` 后退出（成功退出码 0，录制失败 1，参数错误 2）。
 
 ```powershell
 .\build\release\Release\hmmob_ev_app.exe --smoke 5 C:\temp\ui-smoke.mp4
