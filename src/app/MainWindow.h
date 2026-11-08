@@ -29,7 +29,6 @@ class PreviewWidget;
 class RecordButton;
 class StyledComboBox;
 class TitleBar;
-class ToggleCheckBox;
 
 // Optional capture-mode selection for an automated smoke run. Region and
 // window values bypass the interactive selector/picker.
@@ -103,7 +102,7 @@ private:
     void SetError(const QString& error);
     void UpdateStatsLabels(const hmmob::RecorderStats& stats);
     void UpdateAudioUi(bool microphone);
-    void SetAdvancedExpanded(bool expanded);
+    void OpenSettings();
 
     void UpdateStatusGeometry();
     void ToggleMaximize();
@@ -128,23 +127,22 @@ private:
     int selected_display_index_ = -1;
 
     StyledComboBox* resolution_combo_ = nullptr;
-    StyledComboBox* display_combo_ = nullptr;
     StyledComboBox* fps_combo_ = nullptr;
     StyledComboBox* codec_combo_ = nullptr;
-    StyledComboBox* bitrate_combo_ = nullptr;
     StyledComboBox* mic_device_combo_ = nullptr;
     StyledComboBox* system_device_combo_ = nullptr;
-    StyledComboBox* camera_combo_ = nullptr;
-    int camera_device_count_ = 0;
     QPushButton* mic_toggle_ = nullptr;
     QPushButton* system_toggle_ = nullptr;
     LevelMeter* mic_meter_ = nullptr;
     LevelMeter* system_meter_ = nullptr;
-    ToggleCheckBox* hdr_check_ = nullptr;
-    QWidget* advanced_content_ = nullptr;
-    QWidget* display_row_ = nullptr;
-    QPushButton* advanced_button_ = nullptr;
-    QLabel* advanced_chevron_ = nullptr;
+    QPushButton* settings_button_ = nullptr;
+
+    // Authoritative recording options edited by the settings dialog. They
+    // survive the dialog and apply to the next recording.
+    qint64 bitrate_ = 50000000;
+    bool hdr_ = false;
+    int camera_index_ = 0;
+    int camera_device_count_ = 0;
 
     QLineEdit* output_edit_ = nullptr;
     QPushButton* browse_button_ = nullptr;

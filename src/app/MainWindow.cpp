@@ -51,6 +51,7 @@
 #include "app/NavTabButton.h"
 #include "app/PreviewWidget.h"
 #include "app/RegionSelector.h"
+#include "app/SettingsDialog.h"
 #include "app/TitleBar.h"
 #include "app/UiFont.h"
 #include "app/WindowPickerDialog.h"
@@ -108,10 +109,6 @@ QLineEdit#pathEdit { background: transparent; border: none; padding: 0px; font-s
 QLineEdit#pathEdit:disabled { color: #A9AEB8; }
 QPushButton#browseButton { background: transparent; border: none; border-radius: 8px; }
 QPushButton#browseButton:hover { background: #EDF0F5; }
-QWidget#advancedBar { background: #F7F9FC; border-top: 1px solid #F0F2F7; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; }
-QPushButton#advancedButton { background: transparent; border: none; border-radius: 0px; }
-QPushButton#advancedButton:hover { background: #F0F3F8; }
-QWidget#advancedContent { background: transparent; }
 QScrollArea#settingsScroll { background: transparent; border: none; }
 QScrollArea#settingsScroll > QWidget > QWidget { background: transparent; }
 QWidget#scrollContent { background: transparent; }
@@ -264,15 +261,14 @@ QWidget* MainWindow::BuildNavRow() {
         button->setFont(font);
         return button;
     };
-    auto* settings = make_action(Icon::Gear, QStringLiteral("设置"));
+    settings_button_ = make_action(Icon::Gear, QStringLiteral("设置"));
     auto* open_files = make_action(Icon::Folder, QStringLiteral("打开文件"));
-    layout->addWidget(settings);
+    layout->addWidget(settings_button_);
     layout->addSpacing(16);
     layout->addWidget(open_files);
 
-    connect(settings, &QPushButton::clicked, this, [this] {
-        ShowStatus(QStringLiteral("该功能将在后续版本提供"), false, 4000);
-    });
+    connect(settings_button_, &QPushButton::clicked, this,
+            &MainWindow::OpenSettings);
     connect(open_files, &QPushButton::clicked, this, [this] {
         const QString path =
             QFileInfo(output_edit_->text().trimmed()).absolutePath();
@@ -416,7 +412,7 @@ QWidget* MainWindow::BuildVideoCard() {
 
     auto* body = new QWidget(card);
     auto* layout = new QVBoxLayout(body);
-    layout->setContentsMargins(15, 15, 15, 6);
+    layout->setContentsMargins(15, 15, 15, 15);
     layout->setSpacing(0);
 
     auto* header = new QHBoxLayout;
@@ -478,107 +474,9 @@ QWidget* MainWindow::BuildVideoCard() {
     layout->addLayout(row2);
     layout->addSpacing(6);
 
-    advanced_content_ = new QWidget(body);
-    advanced_content_->setObjectName(QStringLiteral("advancedContent"));
-    auto* advanced_layout = new QVBoxLayout(advanced_content_);
-    advanced_layout->setContentsMargins(0, 4, 0, 2);
-    advanced_layout->setSpacing(6);
-
-    auto* bitrate_row = new QHBoxLayout;
-    bitrate_row->setSpacing(0);
-    auto* bitrate_label = new QLabel(QStringLiteral("码率"), advanced_content_);
-    bitrate_label->setObjectName(QStringLiteral("rowLabel"));
-    bitrate_label->setFixedWidth(64);
-    bitrate_row->addWidget(bitrate_label);
-    bitrate_row->addSpacing(10);
-    bitrate_combo_ = new StyledComboBox(advanced_content_);
-    bitrate_combo_->setFixedHeight(32);
-    bitrate_combo_->setFixedWidth(130);
-    bitrate_combo_->addItem(QStringLiteral("20 Mbps"),
-                            QVariant::fromValue<qlonglong>(20000000));
-    bitrate_combo_->addItem(QStringLiteral("50 Mbps"),
-                            QVariant::fromValue<qlonglong>(50000000));
-    bitrate_combo_->addItem(QStringLiteral("100 Mbps"),
-                            QVariant::fromValue<qlonglong>(100000000));
-    bitrate_combo_->setCurrentIndex(1);
-    bitrate_row->addWidget(bitrate_combo_);
-    bitrate_row->addStretch(1);
-    advanced_layout->addLayout(bitrate_row);
-
-    hdr_check_ = new ToggleCheckBox(
-        QStringLiteral("HDR（色调映射为 SDR）"), advanced_content_);
-    hdr_check_->setChecked(false);
-    advanced_layout->addWidget(hdr_check_);
-
-    display_row_ = new QWidget(advanced_content_);
-    auto* display_layout = new QHBoxLayout(display_row_);
-    display_layout->setContentsMargins(0, 0, 0, 0);
-    display_layout->setSpacing(0);
-    auto* display_label = new QLabel(QStringLiteral("显示器"), display_row_);
-    display_label->setObjectName(QStringLiteral("rowLabel"));
-    display_label->setFixedWidth(64);
-    display_layout->addWidget(display_label);
-    display_layout->addSpacing(10);
-    display_combo_ = new StyledComboBox(display_row_);
-    display_combo_->setFixedHeight(32);
-    display_combo_->setMinimumWidth(150);
-    display_layout->addWidget(display_combo_, 1);
-    display_row_->setVisible(false);
-    advanced_layout->addWidget(display_row_);
-
-    auto* camera_row = new QWidget(advanced_content_);
-    auto* camera_layout = new QHBoxLayout(camera_row);
-    camera_layout->setContentsMargins(0, 0, 0, 0);
-    camera_layout->setSpacing(0);
-    auto* camera_label = new QLabel(QStringLiteral("摄像头设备"), camera_row);
-    camera_label->setObjectName(QStringLiteral("rowLabel"));
-    camera_label->setFixedWidth(64);
-    camera_layout->addWidget(camera_label);
-    camera_layout->addSpacing(10);
-    camera_combo_ = new StyledComboBox(camera_row);
-    camera_combo_->setFixedHeight(32);
-    camera_combo_->setMinimumWidth(150);
-    camera_layout->addWidget(camera_combo_, 1);
-    advanced_layout->addWidget(camera_row);
-
-    advanced_content_->setVisible(false);
-    layout->addWidget(advanced_content_);
     layout->addStretch(1);
 
     card_layout->addWidget(body, 1);
-
-    auto* footer = new QWidget(card);
-    footer->setObjectName(QStringLiteral("advancedBar"));
-    footer->setAttribute(Qt::WA_StyledBackground, true);
-    footer->setFixedHeight(34);
-    auto* footer_layout = new QHBoxLayout(footer);
-    footer_layout->setContentsMargins(0, 0, 0, 0);
-    footer_layout->setSpacing(0);
-
-    advanced_button_ = new QPushButton(footer);
-    advanced_button_->setObjectName(QStringLiteral("advancedButton"));
-    advanced_button_->setCheckable(true);
-    advanced_button_->setCursor(Qt::PointingHandCursor);
-    advanced_button_->setFocusPolicy(Qt::NoFocus);
-    auto* button_layout = new QHBoxLayout(advanced_button_);
-    button_layout->setContentsMargins(14, 0, 14, 0);
-    button_layout->setSpacing(8);
-    advanced_chevron_ = new QLabel(advanced_button_);
-    advanced_chevron_->setPixmap(IconRenderer::Pixmap(
-        Icon::ChevronDown, 16, QColor(0x86, 0x90, 0x9C)));
-    advanced_chevron_->setFixedSize(16, 16);
-    button_layout->addWidget(advanced_chevron_);
-    auto* advanced_text = new QLabel(QStringLiteral("高级设置"),
-                                     advanced_button_);
-    advanced_text->setStyleSheet(
-        QStringLiteral("color:#86909C; font-size:13px;"));
-    button_layout->addWidget(advanced_text);
-    button_layout->addStretch(1);
-    footer_layout->addWidget(advanced_button_);
-    card_layout->addWidget(footer);
-
-    connect(advanced_button_, &QPushButton::toggled, this,
-            &MainWindow::SetAdvancedExpanded);
 
     return card;
 }
@@ -682,7 +580,6 @@ QWidget* MainWindow::BuildBottomBar() {
 void MainWindow::PopulateDisplays() {
     displays_.clear();
     resolution_combo_->clear();
-    display_combo_->clear();
 
     hmmob::D3D11Device device;
     if (device.Create()) {
@@ -692,14 +589,7 @@ void MainWindow::PopulateDisplays() {
         resolution_combo_->addItem(
             QStringLiteral("%1 × %2").arg(info.width).arg(info.height),
             info.index);
-        display_combo_->addItem(
-            QStringLiteral("显示器 %1 · %2 × %3")
-                .arg(info.index + 1)
-                .arg(info.width)
-                .arg(info.height),
-            info.index);
     }
-    display_row_->setVisible(displays_.size() > 1);
 
     if (displays_.empty()) {
         resolution_combo_->addItem(QStringLiteral("无可用显示器"));
@@ -713,31 +603,22 @@ void MainWindow::PopulateDisplays() {
 
     selected_display_index_ = displays_.front().index;
     resolution_combo_->setCurrentIndex(0);
-    display_combo_->setCurrentIndex(0);
     has_display_ = true;
     start_button_->setEnabled(CanStart());
     UpdateBadgeText();
 }
 
 void MainWindow::PopulateCameras() {
-    if (!camera_combo_) {
-        return;
-    }
-    camera_combo_->clear();
     const std::vector<hmmob::CameraSource::CameraDeviceInfo> devices =
         hmmob::CameraSource::EnumerateDevices();
     camera_device_count_ = static_cast<int>(devices.size());
-    if (devices.empty()) {
-        camera_combo_->addItem(QStringLiteral("未检测到摄像头"));
-        camera_combo_->setEnabled(false);
+    if (camera_device_count_ <= 0) {
+        camera_index_ = 0;
         return;
     }
-    for (size_t i = 0; i < devices.size(); ++i) {
-        camera_combo_->addItem(QString::fromStdString(devices[i].name),
-                               static_cast<int>(i));
+    if (camera_index_ < 0 || camera_index_ >= camera_device_count_) {
+        camera_index_ = 0;
     }
-    camera_combo_->setCurrentIndex(0);
-    camera_combo_->setEnabled(true);
 }
 
 bool MainWindow::CanStart() const {
@@ -790,12 +671,6 @@ void MainWindow::ConnectSignals() {
                     SelectDisplay(resolution_combo_->itemData(index).toInt());
                 }
             });
-    connect(display_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int index) {
-                if (index >= 0) {
-                    SelectDisplay(display_combo_->itemData(index).toInt());
-                }
-            });
     connect(mode_group_, &QButtonGroup::idClicked, this,
             [this](int id) { SetMode(id); });
 }
@@ -816,8 +691,6 @@ void MainWindow::SetMode(int mode) {
     window_tab_->SetActive(mode == 2);
     camera_tab_->SetActive(mode == 3);
 
-    // HDR tone mapping only exists on the desktop-duplication path.
-    hdr_check_->setEnabled(mode == 0);
     start_button_->setEnabled(CanStart());
 
     const QString region_hint =
@@ -873,15 +746,17 @@ void MainWindow::UpdateAudioUi(bool microphone) {
     toggle->setToolTip(enabled ? QStringLiteral("静音") : QStringLiteral("开启"));
 }
 
-void MainWindow::SetAdvancedExpanded(bool expanded) {
-    if (advanced_content_) {
-        advanced_content_->setVisible(expanded);
+void MainWindow::OpenSettings() {
+    if (recording_) {
+        return;
     }
-    if (advanced_chevron_) {
-        advanced_chevron_->setPixmap(IconRenderer::Pixmap(
-            expanded ? Icon::ChevronUp : Icon::ChevronDown, 16,
-            QColor(0x86, 0x90, 0x9C)));
+    SettingsDialog dialog(bitrate_, hdr_, camera_index_, this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
     }
+    bitrate_ = dialog.bitrate();
+    hdr_ = dialog.hdr();
+    camera_index_ = dialog.cameraIndex();
 }
 
 void MainWindow::ShowStatus(const QString& text, bool error, int timeout_ms) {
@@ -922,22 +797,14 @@ void MainWindow::SelectDisplay(int display_index) {
     if (!known) {
         return;
     }
-    // Both combos are views on the same authoritative selection. Changing one
-    // must not snap back to the other, which matters when two displays share a
-    // resolution and only their indices differ.
+    // The resolution combo is the only view on the selection, so keep its
+    // current item in sync when the change came from somewhere else.
     selected_display_index_ = display_index;
     {
         const QSignalBlocker blocker(resolution_combo_);
         const int index = resolution_combo_->findData(display_index);
         if (index >= 0) {
             resolution_combo_->setCurrentIndex(index);
-        }
-    }
-    {
-        const QSignalBlocker blocker(display_combo_);
-        const int index = display_combo_->findData(display_index);
-        if (index >= 0) {
-            display_combo_->setCurrentIndex(index);
         }
     }
     UpdateBadgeText();
@@ -1066,12 +933,10 @@ hmmob::RecorderConfig MainWindow::BuildConfig() const {
     config.display_index = selected_display_index_;
     config.fps = fps_combo_->currentData().toInt();
     config.codec = codec_combo_->currentData().toString().toStdString();
-    config.bitrate = bitrate_combo_->currentData().toLongLong();
+    config.bitrate = bitrate_;
     // HDR capture only exists on the desktop-duplication path.
-    config.hdr = selected_mode_ == 0 && hdr_check_->isChecked();
-    if (camera_combo_ && camera_combo_->isEnabled()) {
-        config.camera_index = camera_combo_->currentData().toInt();
-    }
+    config.hdr = selected_mode_ == 0 && hdr_;
+    config.camera_index = camera_index_;
     config.system_audio = system_toggle_->isChecked();
     config.microphone = mic_toggle_->isChecked();
     // Source levels are intentionally fixed at unity in this build; the
@@ -1389,14 +1254,11 @@ void MainWindow::FinalizeRecording() {
 
 void MainWindow::SetConfigEnabled(bool enabled) {
     resolution_combo_->setEnabled(enabled && has_display_);
-    display_combo_->setEnabled(enabled && has_display_);
     fps_combo_->setEnabled(enabled);
     codec_combo_->setEnabled(enabled);
-    bitrate_combo_->setEnabled(enabled);
-    hdr_check_->setEnabled(enabled && selected_mode_ == 0);
-    if (camera_combo_) {
-        camera_combo_->setEnabled(enabled && camera_device_count_ > 0);
-    }
+    // The dialog edits options for the next run; it must not be reachable
+    // while this run is recording or saving.
+    settings_button_->setEnabled(enabled);
     mic_toggle_->setEnabled(enabled);
     system_toggle_->setEnabled(enabled);
     mic_device_combo_->setEnabled(enabled);
@@ -1438,9 +1300,8 @@ void MainWindow::StartSmoke(int seconds, const QString& path,
     fps_combo_->setCurrentIndex(fps_combo_->findData(60));
     codec_combo_->setCurrentIndex(
         codec_combo_->findData(QStringLiteral("hevc")));
-    bitrate_combo_->setCurrentIndex(
-        bitrate_combo_->findData(QVariant::fromValue<qlonglong>(50000000)));
-    hdr_check_->setChecked(false);
+    bitrate_ = 50000000;
+    hdr_ = false;
     system_toggle_->setChecked(true);
     mic_toggle_->setChecked(true);
 
