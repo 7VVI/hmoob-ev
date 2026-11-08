@@ -58,25 +58,68 @@ void WindowSource::RecordFailure(std::string message, HRESULT hr) {
 }
 
 void WindowSource::Close() {
+    // Closing a Windows Graphics Capture session or frame pool blocks once the
+    // captured window has already been destroyed: DWM is tearing the item down
+    // at the same time, and the close waits for it. Doing that synchronously
+    // would hang Recorder::Stop and the recording thread whenever the user
+    // closes the window while recording. Move the WinRT teardown to a detached
+    // thread in that case. The thread owns its references and never touches
+    // `this`, which may already be destroyed when it runs.
+    const bool window_gone = window_ != nullptr && !IsWindow(window_);
+
     // The session holds the item and the pool; close the session first so no
     // frame is delivered while the rest is torn down.
-    if (session_) {
-        CloseWinrtObject(session_.Get());
-        session_.Reset();
-    }
-    if (pool_) {
-        CloseWinrtObject(pool_.Get());
-        pool_.Reset();
-    }
-    item_.Reset();
-    texture_.Reset();
-    context_.Reset();
-    device_.Reset();
+    ComPtr<WGC::IGraphicsCaptureSession> session = std::move(session_);
+    ComPtr<WGC::IDirect3D11CaptureFramePool> pool = std::move(pool_);
+    ComPtr<WGC::IGraphicsCaptureItem> item = std::move(item_);
+
     window_ = nullptr;
     width_ = 0;
     height_ = 0;
     window_width_ = 0;
     window_height_ = 0;
+
+    if (window_gone) {
+        // The pool keeps its own reference to the D3D device, so the device
+        // and the apartment can be released here while the detached thread
+        // finishes the WinRT teardown.
+        texture_.Reset();
+        context_.Reset();
+        device_.Reset();
+        if (ro_initialized_) {
+            RoUninitialize();
+            ro_initialized_ = false;
+        }
+        if (session || pool || item) {
+            try {
+                std::thread([session = std::move(session),
+                             pool = std::move(pool),
+                             item = std::move(item)]() mutable {
+                    CloseWinrtObject(session.Get());
+                    session.Reset();
+                    CloseWinrtObject(pool.Get());
+                    pool.Reset();
+                    item.Reset();
+                }).detach();
+            } catch (...) {
+                // Thread creation failed and released the moved references on
+                // this thread, so there is nothing left to close.
+            }
+        }
+        return;
+    }
+
+    // Close the capture objects before the device and the WinRT apartment go
+    // away: releasing the device first crashes the frame pool teardown.
+    CloseWinrtObject(session.Get());
+    session.Reset();
+    CloseWinrtObject(pool.Get());
+    pool.Reset();
+    item.Reset();
+
+    texture_.Reset();
+    context_.Reset();
+    device_.Reset();
     if (ro_initialized_) {
         RoUninitialize();
         ro_initialized_ = false;
