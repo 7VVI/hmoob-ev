@@ -129,35 +129,72 @@ void DesktopPreview::Impl::Run() {
         return;
     }
 
+    // The capture size can change while the preview runs (display mode
+    // switch). Track the size the converter and staging texture were built
+    // for so a mismatching frame can rebuild them instead of failing forever.
+    int capture_width = capture.width();
+    int capture_height = capture.height();
+
     VideoProcessor converter;
-    if (!converter.Initialize(d3d, capture.width(), capture.height(), width,
-                              height, DXGI_FORMAT_B8G8R8A8_UNORM)) {
+    if (!converter.Initialize(d3d, capture_width, capture_height, width, height,
+                              DXGI_FORMAT_B8G8R8A8_UNORM)) {
         fail_init("failed to initialize preview converter");
         return;
     }
 
-    D3D11_TEXTURE2D_DESC staging_desc{};
-    staging_desc.Width = static_cast<UINT>(width);
-    staging_desc.Height = static_cast<UINT>(height);
-    staging_desc.MipLevels = 1;
-    staging_desc.ArraySize = 1;
-    staging_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    staging_desc.SampleDesc.Count = 1;
-    staging_desc.Usage = D3D11_USAGE_STAGING;
-    staging_desc.BindFlags = 0;
-    staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     ComPtr<ID3D11Texture2D> staging;
-    if (FAILED(d3d.device()->CreateTexture2D(&staging_desc, nullptr,
-                                             &staging))) {
+    const auto create_staging = [&]() -> bool {
+        staging.Reset();
+        D3D11_TEXTURE2D_DESC staging_desc{};
+        staging_desc.Width = static_cast<UINT>(width);
+        staging_desc.Height = static_cast<UINT>(height);
+        staging_desc.MipLevels = 1;
+        staging_desc.ArraySize = 1;
+        staging_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        staging_desc.SampleDesc.Count = 1;
+        staging_desc.Usage = D3D11_USAGE_STAGING;
+        staging_desc.BindFlags = 0;
+        staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        return SUCCEEDED(d3d.device()->CreateTexture2D(
+            &staging_desc, nullptr, &staging));
+    };
+    if (!create_staging()) {
         fail_init("failed to create preview staging texture");
         return;
     }
+
+    // Releases the stale converter and staging texture before rebuilding them
+    // for a new capture size. Returns false when either step fails; the caller
+    // keeps the last frame and retries on the next acquired frame.
+    const auto reinitialize = [&](int input_width, int input_height) -> bool {
+        converter = VideoProcessor{};
+        staging.Reset();
+        if (!converter.Initialize(d3d, input_width, input_height, width, height,
+                                  DXGI_FORMAT_B8G8R8A8_UNORM)) {
+            return false;
+        }
+        if (!create_staging()) {
+            return false;
+        }
+        capture_width = input_width;
+        capture_height = input_height;
+        return true;
+    };
+
+    // Stop-aware backoff: slices keep Stop() responsive while still throttling
+    // retries to roughly five per second.
+    const auto backoff = [&] {
+        for (int slice = 0; slice < 20 && !stop_requested.load(); ++slice) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    };
 
     const int64_t frame_interval_us =
         fps > 0 ? 1'000'000 / fps : 1'000'000 / 30;
     int64_t next_deadline_us = NowUs();
     // Each distinct failure is reported at most once; retries stay silent.
     bool capture_error_logged = false;
+    bool reinit_error_logged = false;
     bool conversion_error_logged = false;
     bool readback_error_logged = false;
 
@@ -174,7 +211,7 @@ void DesktopPreview::Impl::Run() {
         }
 
         CaptureFrame frame;
-        if (!capture.Acquire(frame, 100)) {
+        if (!capture.Acquire(frame, 50)) {
             if (capture.failed()) {
                 SetError("capture failed");
                 if (!capture_error_logged) {
@@ -186,7 +223,7 @@ void DesktopPreview::Impl::Run() {
                     capture_error_logged = true;
                 }
                 // Back off instead of spinning on a dead duplication.
-                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                backoff();
             }
             // A plain timeout means the desktop is unchanged. The first
             // acquire after duplication creation normally delivers the
@@ -194,17 +231,50 @@ void DesktopPreview::Impl::Run() {
             continue;
         }
 
+        // A display mode change makes the frame size differ from the size the
+        // converter was built for. Rebuild before touching the stale pipeline.
+        if (frame.width != capture_width || frame.height != capture_height) {
+            if (!reinitialize(frame.width, frame.height)) {
+                SetError("preview re-initialize failed");
+                if (!reinit_error_logged) {
+                    std::fprintf(stderr,
+                                 "warning: desktop preview re-initialize "
+                                 "failed; keeping the last frame\n");
+                    reinit_error_logged = true;
+                }
+                backoff();
+                continue;
+            }
+        }
+
         if (!converter.Convert(frame.texture.Get(),
                                converter.output_texture())) {
-            SetError("preview conversion failed");
-            if (!conversion_error_logged) {
-                std::fprintf(stderr,
-                             "warning: desktop preview conversion failed; "
-                             "keeping the last frame\n");
-                conversion_error_logged = true;
+            // Convert can also fail transiently or because the processor went
+            // stale; rebuild both resources once and retry this frame before
+            // latching the failure.
+            if (!reinitialize(frame.width, frame.height)) {
+                SetError("preview re-initialize failed");
+                if (!reinit_error_logged) {
+                    std::fprintf(stderr,
+                                 "warning: desktop preview re-initialize "
+                                 "failed; keeping the last frame\n");
+                    reinit_error_logged = true;
+                }
+                backoff();
+                continue;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            continue;
+            if (!converter.Convert(frame.texture.Get(),
+                                   converter.output_texture())) {
+                SetError("preview conversion failed");
+                if (!conversion_error_logged) {
+                    std::fprintf(stderr,
+                                 "warning: desktop preview conversion failed; "
+                                 "keeping the last frame\n");
+                    conversion_error_logged = true;
+                }
+                backoff();
+                continue;
+            }
         }
 
         d3d.context()->CopyResource(staging.Get(),
@@ -229,7 +299,7 @@ void DesktopPreview::Impl::Run() {
                              static_cast<unsigned long>(map_hr));
                 readback_error_logged = true;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            backoff();
             continue;
         }
 
@@ -247,6 +317,10 @@ void DesktopPreview::Impl::Run() {
         {
             std::lock_guard<std::mutex> lock(mutex);
             latest_frame = std::move(preview);
+            // A published frame proves the pipeline recovered; drop a latched
+            // error so a transient failure (lock screen, UAC) does not keep
+            // the UI stuck on "preview unavailable".
+            error.clear();
         }
 
         next_deadline_us += frame_interval_us;

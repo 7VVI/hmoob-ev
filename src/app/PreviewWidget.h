@@ -4,11 +4,12 @@
 #include <QWidget>
 #include <memory>
 
-#include "core/recorder/Recorder.h"
+#include "core/preview/PreviewFrame.h"
 
-// Shows the latest BGRA preview frame published by the recorder, scaled to fit
-// while preserving the aspect ratio. No alpha blending: the frame format is
-// BGRA8 but the A byte is ignored.
+// Shows the latest BGRA preview frame, published by the recorder while
+// recording or by the idle desktop preview otherwise, scaled to fit while
+// preserving the aspect ratio. No alpha blending: the frame format is BGRA8
+// but the A byte is ignored.
 class PreviewWidget : public QWidget {
     Q_OBJECT
 

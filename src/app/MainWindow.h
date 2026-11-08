@@ -81,6 +81,9 @@ private:
 
     bool has_display_ = false;
     bool preview_started_ = false;
+    // True while status_label_ shows a recording result (save, failure or
+    // start failure) that the idle preview must not overwrite.
+    bool status_message_locked_ = false;
     bool recording_ = false;
     bool stop_requested_ = false;
     bool closing_ = false;

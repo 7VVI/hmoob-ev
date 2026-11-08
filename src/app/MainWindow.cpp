@@ -179,7 +179,11 @@ void MainWindow::ConnectSignals() {
     connect(display_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) {
                 if (!recording_) {
+                    // Stop() joins the preview thread, which can wait for one
+                    // short capture timeout.
+                    QApplication::setOverrideCursor(Qt::WaitCursor);
                     StartIdlePreview();
+                    QApplication::restoreOverrideCursor();
                 }
             });
 }
@@ -205,10 +209,13 @@ void MainWindow::StartIdlePreview() {
     if (!preview_source_.Start(display_index, 640, 360, 30, error)) {
         preview_->SetFrame(nullptr);
         last_preview_.reset();
-        status_label_->setText(PreviewUnavailableText(error));
+        if (!status_message_locked_) {
+            status_label_->setText(PreviewUnavailableText(error));
+        }
         return;
     }
-    if (status_label_->text().startsWith(QStringLiteral("预览不可用："))) {
+    if (!status_message_locked_ &&
+        status_label_->text().startsWith(QStringLiteral("预览不可用："))) {
         status_label_->setText(IdleStatusText());
     }
 }
@@ -312,8 +319,9 @@ bool MainWindow::StartRecording() {
     output_path_ = path;
 
     // The idle preview owns a desktop duplication for this output. Release it
-    // (Stop joins within one acquire timeout) before the recorder creates its
+    // (Stop joins within one capture timeout) before the recorder creates its
     // own, otherwise the second DuplicateOutput can fail.
+    QApplication::setOverrideCursor(Qt::WaitCursor);
     preview_source_.Stop();
 
     // A new attempt must never show the previous run's last frame, even if
@@ -323,18 +331,21 @@ bool MainWindow::StartRecording() {
     save_watchdog_.invalidate();
 
     std::string error;
-    QApplication::setOverrideCursor(Qt::WaitCursor);
     const bool started = recorder_.Start(config, error);
     QApplication::restoreOverrideCursor();
 
     if (!started) {
         SetError(QString::fromStdString(error));
         SetConfigEnabled(true);
+        // Keep this failure visible; a preview-restart message must not
+        // replace it.
+        status_message_locked_ = true;
         StartIdlePreview();
         return false;
     }
 
     SetError(QString());
+    status_message_locked_ = false;
     recording_ = true;
     stop_requested_ = false;
     tick_count_ = 0;
@@ -367,15 +378,17 @@ void MainWindow::Tick() {
             last_preview_ = idle_frame;
             preview_->SetFrame(std::move(idle_frame));
         }
-        const std::string preview_error = preview_source_.error();
-        if (!preview_error.empty()) {
-            const QString message = PreviewUnavailableText(preview_error);
-            if (status_label_->text() != message) {
-                status_label_->setText(message);
+        if (!status_message_locked_) {
+            const std::string preview_error = preview_source_.error();
+            if (!preview_error.empty()) {
+                const QString message = PreviewUnavailableText(preview_error);
+                if (status_label_->text() != message) {
+                    status_label_->setText(message);
+                }
+            } else if (status_label_->text().startsWith(
+                           QStringLiteral("预览不可用："))) {
+                status_label_->setText(IdleStatusText());
             }
-        } else if (status_label_->text().startsWith(
-                       QStringLiteral("预览不可用："))) {
-            status_label_->setText(IdleStatusText());
         }
         // Stats stay idle until recording starts.
         return;
@@ -460,6 +473,10 @@ void MainWindow::FinalizeRecording() {
             output_edit_->setText(auto_path_);
         }
     }
+
+    // The status area now reports the recording outcome; the idle preview
+    // must not replace it with a transient error message.
+    status_message_locked_ = true;
 
     if (std::shared_ptr<const hmmob::PreviewFrame> frame =
             recorder_.LatestPreview()) {
