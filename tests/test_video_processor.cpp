@@ -66,11 +66,11 @@ TEST_CASE("VideoProcessor converts BGRA to NV12", "[integration]") {
     REQUIRE(src.Get() != nullptr);
 
     hmmob::VideoProcessor processor;
-    REQUIRE(processor.width() == 0);
-    REQUIRE(processor.height() == 0);
+    REQUIRE(processor.input_width() == 0);
+    REQUIRE(processor.input_height() == 0);
     REQUIRE(processor.Initialize(d3d, kWidth, kHeight));
-    REQUIRE(processor.width() == kWidth);
-    REQUIRE(processor.height() == kHeight);
+    REQUIRE(processor.input_width() == kWidth);
+    REQUIRE(processor.input_height() == kHeight);
     REQUIRE(processor.Convert(src.Get(), processor.output_texture()));
 
     D3D11_TEXTURE2D_DESC out_desc{};
@@ -158,12 +158,12 @@ TEST_CASE("VideoProcessor supports re-initialization", "[integration]") {
 
     hmmob::VideoProcessor processor;
     REQUIRE(processor.Initialize(d3d, 320, 180));
-    REQUIRE(processor.width() == 320);
-    REQUIRE(processor.height() == 180);
+    REQUIRE(processor.input_width() == 320);
+    REQUIRE(processor.input_height() == 180);
 
     REQUIRE(processor.Initialize(d3d, kWidth, kHeight));
-    REQUIRE(processor.width() == kWidth);
-    REQUIRE(processor.height() == kHeight);
+    REQUIRE(processor.input_width() == kWidth);
+    REQUIRE(processor.input_height() == kHeight);
 
     std::vector<uint8_t> pixels(static_cast<size_t>(kWidth) * kHeight * 4, 128);
     auto src = CreateBgraTexture(d3d.device(), kWidth, kHeight, pixels);
@@ -181,8 +181,8 @@ TEST_CASE("VideoProcessor resets after failed Initialize", "[integration]") {
     hmmob::VideoProcessor processor;
     REQUIRE(processor.Initialize(d3d, 320, 180));
     REQUIRE_FALSE(processor.Initialize(d3d, 0, 0));
-    REQUIRE(processor.width() == 0);
-    REQUIRE(processor.height() == 0);
+    REQUIRE(processor.input_width() == 0);
+    REQUIRE(processor.input_height() == 0);
     REQUIRE_FALSE(processor.Convert(nullptr, nullptr));
 }
 
@@ -194,19 +194,32 @@ TEST_CASE("VideoProcessor scales BGRA to a smaller BGRA output", "[integration]"
 
     hmmob::VideoProcessor converter;
     REQUIRE(converter.Initialize(d3d, 64, 64, 32, 32, DXGI_FORMAT_B8G8R8A8_UNORM));
+    REQUIRE(converter.input_width() == 64);
+    REQUIRE(converter.input_height() == 64);
     REQUIRE(converter.output_width() == 32);
     REQUIRE(converter.output_height() == 32);
     REQUIRE(converter.output_format() == DXGI_FORMAT_B8G8R8A8_UNORM);
 
-    std::vector<uint8_t> red(static_cast<size_t>(64) * 64 * 4);
+    std::vector<uint8_t> bgra(static_cast<size_t>(64) * 64 * 4);
     for (int y = 0; y < 64; ++y) {
         for (int x = 0; x < 64; ++x) {
-            SetPixel(red, 64, x, y, 0, 0, 255, 255);  // BGRA red
+            if (x < 64 / 2) {
+                SetPixel(bgra, 64, x, y, 0, 0, 255, 255);    // BGRA red
+            } else {
+                SetPixel(bgra, 64, x, y, 255, 0, 0, 255);    // BGRA blue
+            }
         }
     }
-    auto input = CreateBgraTexture(d3d.device(), 64, 64, red);
+    auto input = CreateBgraTexture(d3d.device(), 64, 64, bgra);
     REQUIRE(input.Get() != nullptr);
     REQUIRE(converter.Convert(input.Get(), converter.output_texture()));
+
+    D3D11_TEXTURE2D_DESC out_desc{};
+    converter.output_texture()->GetDesc(&out_desc);
+    REQUIRE(out_desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM);
+    REQUIRE(out_desc.Width == 32);
+    REQUIRE(out_desc.Height == 32);
+    REQUIRE(out_desc.ArraySize == 1);
 
     D3D11_TEXTURE2D_DESC staging_desc{};
     staging_desc.Width = 32;
@@ -224,15 +237,21 @@ TEST_CASE("VideoProcessor scales BGRA to a smaller BGRA output", "[integration]"
     D3D11_MAPPED_SUBRESOURCE mapped{};
     REQUIRE(SUCCEEDED(d3d.context()->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)));
 
-    const auto* row = static_cast<const uint8_t*>(mapped.pData) +
-                      16 * mapped.RowPitch + 16 * 4;
-    const int blue = row[0];
-    const int green = row[1];
-    const int red_channel = row[2];
+    const auto* row = static_cast<const uint8_t*>(mapped.pData) + 16 * mapped.RowPitch;
+    // Left half of the output must come from the red half, right half from blue.
+    const int left_blue = row[8 * 4 + 0];
+    const int left_green = row[8 * 4 + 1];
+    const int left_red = row[8 * 4 + 2];
+    const int right_blue = row[24 * 4 + 0];
+    const int right_green = row[24 * 4 + 1];
+    const int right_red = row[24 * 4 + 2];
 
     d3d.context()->Unmap(staging.Get(), 0);
 
-    REQUIRE(blue < 16);
-    REQUIRE(green < 16);
-    REQUIRE(red_channel > 240);
+    REQUIRE(left_blue < 16);
+    REQUIRE(left_green < 16);
+    REQUIRE(left_red > 240);
+    REQUIRE(right_blue > 240);
+    REQUIRE(right_green < 16);
+    REQUIRE(right_red < 16);
 }

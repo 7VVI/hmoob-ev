@@ -21,8 +21,8 @@ public:
     // removed in Phase 1.
     [[nodiscard]] bool Convert(ID3D11Texture2D* input, ID3D11Texture2D* output);
     ID3D11Texture2D* output_texture() const { return output_.Get(); }
-    int width() const { return input_width_; }
-    int height() const { return input_height_; }
+    int input_width() const { return input_width_; }
+    int input_height() const { return input_height_; }
     int output_width() const { return output_width_; }
     int output_height() const { return output_height_; }
     DXGI_FORMAT output_format() const { return output_format_; }
