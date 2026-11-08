@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <future>
 #include <objbase.h>
@@ -80,9 +81,21 @@ struct Recorder::Impl {
     int64_t target_frames = 0;
     bool audio_track = false;
 
+    // Preview state. The converter and staging texture are owned by the
+    // recording thread; `latest_preview` is published under `mutex` so the UI
+    // can pull it from another thread.
+    VideoProcessor preview_converter;
+    ComPtr<ID3D11Texture2D> preview_staging;
+    std::shared_ptr<const PreviewFrame> latest_preview;
+    uint64_t preview_sequence = 0;
+    int preview_interval = 1;
+    bool preview_enabled = false;
+    bool preview_error_logged = false;
+
     void Run();
     void PublishStats(int64_t now_us);
     void ResetRunState();
+    void PublishPreview(ID3D11DeviceContext* context, ID3D11Texture2D* source);
 
     // Keeps the first failure: later cleanup failures are consequences of it.
     void RecordError(std::string message) {
@@ -130,6 +143,63 @@ void Recorder::Impl::PublishStats(int64_t now_us) {
     stats.audio_bytes = audio_bytes;
     stats.target_frames = static_cast<int>(target_frames);
     stats.audio_track = audio_track;
+}
+
+void Recorder::Impl::PublishPreview(ID3D11DeviceContext* context,
+                                    ID3D11Texture2D* source) {
+    if (!context || !source || !preview_staging ||
+        !preview_converter.output_texture()) {
+        return;
+    }
+
+    const auto log_failure = [this](const char* stage, HRESULT hr) {
+        if (!preview_error_logged) {
+            std::fprintf(stderr,
+                         "warning: preview %s failed (0x%08lx); "
+                         "preview updates stopped\n",
+                         stage, static_cast<unsigned long>(hr));
+            preview_error_logged = true;
+        }
+    };
+
+    // Downscale to the preview size on the GPU. The result is a BGRA8 texture
+    // so the readback rows can be handed to the UI as-is.
+    if (!preview_converter.Convert(source,
+                                   preview_converter.output_texture())) {
+        log_failure("conversion", E_FAIL);
+        return;
+    }
+    context->CopyResource(preview_staging.Get(),
+                          preview_converter.output_texture());
+
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    const HRESULT map_hr =
+        context->Map(preview_staging.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+    if (FAILED(map_hr)) {
+        // Nothing was mapped, so there is nothing to unmap.
+        log_failure("readback", map_hr);
+        return;
+    }
+
+    auto preview = std::make_shared<PreviewFrame>();
+    preview->width = config.preview_width;
+    preview->height = config.preview_height;
+    preview->stride = config.preview_width * 4;
+    preview->bgra.resize(static_cast<size_t>(preview->stride) *
+                         static_cast<size_t>(preview->height));
+    const size_t row_bytes = static_cast<size_t>(preview->stride);
+    for (int y = 0; y < preview->height; ++y) {
+        std::memcpy(preview->bgra.data() + static_cast<size_t>(y) * row_bytes,
+                    static_cast<const uint8_t*>(mapped.pData) +
+                        static_cast<size_t>(y) * mapped.RowPitch,
+                    row_bytes);
+    }
+    context->Unmap(preview_staging.Get(), 0);
+    preview->sequence = ++preview_sequence;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        latest_preview = std::move(preview);
+    }
 }
 
 void Recorder::Impl::Run() {
@@ -294,6 +364,34 @@ void Recorder::Impl::Run() {
     if (mic_ok) mic_capture.ring()->Clear();
     audio_track = audio_enabled;
 
+    // Optional preview pipeline: downscale the latest frame to a small BGRA8
+    // texture for the UI. Any failure here disables previews but must never
+    // fail the recording.
+    if (config.preview_width > 0 && config.preview_height > 0 &&
+        config.preview_fps > 0) {
+        preview_interval = std::max(1, config.fps / config.preview_fps);
+        if (preview_converter.Initialize(d3d, width, height,
+                                         config.preview_width,
+                                         config.preview_height,
+                                         DXGI_FORMAT_B8G8R8A8_UNORM)) {
+            D3D11_TEXTURE2D_DESC staging_desc{};
+            staging_desc.Width = static_cast<UINT>(config.preview_width);
+            staging_desc.Height = static_cast<UINT>(config.preview_height);
+            staging_desc.MipLevels = 1;
+            staging_desc.ArraySize = 1;
+            staging_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            staging_desc.SampleDesc.Count = 1;
+            staging_desc.Usage = D3D11_USAGE_STAGING;
+            staging_desc.BindFlags = 0;
+            staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            preview_enabled = SUCCEEDED(d3d.device()->CreateTexture2D(
+                &staging_desc, nullptr, &preview_staging));
+        }
+    }
+    if (!preview_enabled) {
+        ReportWarning("warning: preview disabled");
+    }
+
     QpcClock clock;
     start_us = clock.NowUs();
     const int64_t frame_interval_us = 1'000'000 / config.fps;
@@ -301,6 +399,9 @@ void Recorder::Impl::Run() {
     int64_t next_deadline_us = start_us;
     bool have_frame = false;
     bool write_failed = false;
+    // Latest BGRA source handed to the encoder path; reused for previews on
+    // iterations where no new desktop frame arrived.
+    ID3D11Texture2D* last_source = nullptr;
 
     const auto fail = [&](std::string message) {
         RecordError(std::move(message));
@@ -391,6 +492,7 @@ void Recorder::Impl::Run() {
                 break;
             }
             have_frame = true;
+            last_source = source;
             ++acquired;
             if (frame.new_desktop) {
                 ++new_desktop_frames;
@@ -486,6 +588,14 @@ void Recorder::Impl::Run() {
             }
             ++encoded_frames;
             PublishStats(clock.NowUs());
+
+            // Preview work runs after the stats publish so the hot encode/mux
+            // path is unaffected. The readback is blocking but covers only the
+            // small preview texture.
+            if (have_frame && preview_enabled &&
+                encoded_frames % preview_interval == 0) {
+                PublishPreview(d3d.context(), last_source);
+            }
         }
 
         next_deadline_us += frame_interval_us;
@@ -550,7 +660,14 @@ bool Recorder::Start(const RecorderConfig& config, std::string& error) {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->error.clear();
         impl_->stats = RecorderStats{};
+        impl_->latest_preview.reset();
     }
+    impl_->preview_sequence = 0;
+    impl_->preview_interval = 1;
+    impl_->preview_enabled = false;
+    impl_->preview_error_logged = false;
+    impl_->preview_staging.Reset();
+    impl_->preview_converter = VideoProcessor{};
     impl_->ResetRunState();
     impl_->stop_requested.store(false);
     impl_->running.store(false);
@@ -609,8 +726,10 @@ RecorderStats Recorder::stats() const {
 }
 
 std::shared_ptr<const PreviewFrame> Recorder::LatestPreview() const {
-    // Frames are added in the preview task; nullptr means "nothing yet".
-    return nullptr;
+    // nullptr means no preview frame has been published yet (or previews are
+    // disabled). The shared_ptr keeps the frame alive after the pull.
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->latest_preview;
 }
 
 }  // namespace hmmob
