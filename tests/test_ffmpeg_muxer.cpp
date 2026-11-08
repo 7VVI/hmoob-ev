@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <d3d11.h>
 #include <process.h>
 #include <wrl/client.h>
@@ -20,6 +21,7 @@ extern "C" {
 }
 
 #include "core/audio/AacEncoder.h"
+#include "core/audio/AudioEncoder.h"
 #include "core/encoder/AmfEncoder.h"
 #include "core/gfx/D3D11Device.h"
 #include "core/mux/FfmpegMuxer.h"
@@ -46,13 +48,14 @@ struct TempFile {
 };
 
 // A per-run name so concurrent test processes cannot collide.
-std::filesystem::path UniqueTempPath(const std::string& tag) {
+std::filesystem::path UniqueTempPath(const std::string& tag,
+                                     const std::string& extension = ".mp4") {
     static std::atomic<int> counter{0};
     const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
     return std::filesystem::temp_directory_path() /
            ("hmmob-muxer-" + tag + "-" + std::to_string(::_getpid()) + "-" +
             std::to_string(stamp) + "-" + std::to_string(counter.fetch_add(1)) +
-            ".mp4");
+            extension);
 }
 
 // A syntactically valid Annex B H.264 keyframe: SPS, PPS and an IDR slice.
@@ -249,6 +252,270 @@ void CheckRun(const MuxRun& run) {
     CHECK(run.packets_written >= kFrameCount);
     CHECK(run.packets_demuxed >= kFrameCount);
     CHECK(run.frames_decoded >= kFrameCount);
+}
+
+// One row of the container matrix: mux AMF video plus generated audio into
+// `extension`, then demux and decode both tracks.
+struct ContainerCase {
+    const char* name;
+    const char* extension;
+    const char* video_codec;
+    hmmob::AudioCodec audio_codec;
+    AVCodecID video_codec_id;
+    AVCodecID audio_codec_id;
+    // 0 means the container selects the tag itself and it is not asserted.
+    uint32_t video_codec_tag;
+};
+
+const ContainerCase kContainerCases[] = {
+    {"mp4-hevc-aac", ".mp4", "hevc", hmmob::AudioCodec::Aac,
+     AV_CODEC_ID_HEVC, AV_CODEC_ID_AAC, MKTAG('h', 'v', 'c', '1')},
+    {"mp4-h264-pcm", ".mp4", "h264", hmmob::AudioCodec::PcmS16Le,
+     AV_CODEC_ID_H264, AV_CODEC_ID_PCM_S16LE, MKTAG('a', 'v', 'c', '1')},
+    {"mov-h264-pcm", ".mov", "h264", hmmob::AudioCodec::PcmS16Le,
+     AV_CODEC_ID_H264, AV_CODEC_ID_PCM_S16LE, MKTAG('a', 'v', 'c', '1')},
+    {"mkv-hevc-aac", ".mkv", "hevc", hmmob::AudioCodec::Aac,
+     AV_CODEC_ID_HEVC, AV_CODEC_ID_AAC, 0},
+    {"avi-h264-pcm", ".avi", "h264", hmmob::AudioCodec::PcmS16Le,
+     AV_CODEC_ID_H264, AV_CODEC_ID_PCM_S16LE, MKTAG('H', '2', '6', '4')},
+    {"flv-h264-aac", ".flv", "h264", hmmob::AudioCodec::Aac,
+     AV_CODEC_ID_H264, AV_CODEC_ID_AAC, 0},
+    {"wmv-h264-pcm", ".wmv", "h264", hmmob::AudioCodec::PcmS16Le,
+     AV_CODEC_ID_H264, AV_CODEC_ID_PCM_S16LE, MKTAG('H', '2', '6', '4')},
+};
+
+struct ContainerDecodeResult {
+    int video_frames = 0;
+    int audio_packets = 0;
+    int audio_frames = 0;
+    int64_t audio_samples = 0;
+    int64_t first_audio_pts = AV_NOPTS_VALUE;
+};
+
+void RunContainerCase(const ContainerCase& test_case) {
+    constexpr int kAudioRate = 48000;
+    constexpr int kAudioChannels = 2;
+    constexpr int kAudioBitrate = 192000;
+    constexpr int kVideoFrameCount = 30;
+    constexpr int kAudioFramesPerVideo = kAudioRate / kFps;
+    constexpr double kPi = 3.14159265358979323846;
+
+    hmmob::D3D11Device d3d;
+    if (!d3d.Create()) {
+        SKIP("D3D11 device unavailable");
+    }
+
+    hmmob::AmfEncoder encoder;
+    if (!encoder.Initialize(d3d.device(), test_case.video_codec, kWidth,
+                            kHeight, kFps, kBitrate)) {
+        SKIP("AMF " << test_case.video_codec << " encoder unavailable");
+    }
+
+    hmmob::AudioEncoder audio;
+    REQUIRE(audio.Initialize(kAudioRate, kAudioChannels, kAudioBitrate,
+                             test_case.audio_codec));
+
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = kWidth;
+    desc.Height = kHeight;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_NV12;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+    REQUIRE(SUCCEEDED(d3d.device()->CreateTexture2D(&desc, nullptr, &texture)));
+
+    TempFile output{UniqueTempPath(test_case.name, test_case.extension)};
+    const std::string path = output.path.string();
+
+    hmmob::AudioConfig audio_config;
+    audio_config.enabled = true;
+    audio_config.codec = audio.codec();
+    audio_config.sample_rate = audio.sample_rate();
+    audio_config.channels = audio.channels();
+    audio_config.bitrate = audio.bitrate();
+    audio_config.frame_size = audio.frame_size();
+    audio_config.initial_padding = audio.initial_padding_samples();
+    audio_config.extradata = audio.extradata();
+
+    hmmob::FfmpegMuxer muxer;
+    REQUIRE(muxer.Open(path, test_case.video_codec, kWidth, kHeight, kFps,
+                       kBitrate, audio_config));
+
+    int video_packets_written = 0;
+    int audio_packets_written = 0;
+    const auto write_video = [&](const hmmob::AmfPacket& packet) {
+        REQUIRE_FALSE(packet.data.empty());
+        REQUIRE(muxer.WritePacket(packet.data.data(), packet.data.size(),
+                                  packet.pts_us, packet.keyframe));
+        ++video_packets_written;
+    };
+    const auto write_audio = [&](const hmmob::AacPacket& packet) {
+        REQUIRE_FALSE(packet.data.empty());
+        const int64_t pts_us = packet.pts_samples * 1'000'000 / kAudioRate;
+        REQUIRE(muxer.WriteAudioPacket(packet.data.data(), packet.data.size(),
+                                       pts_us, packet.duration_samples));
+        ++audio_packets_written;
+    };
+
+    std::vector<uint8_t> nv12(kWidth * kHeight * 3 / 2, 128);
+    std::vector<float> pcm(
+        static_cast<size_t>(kAudioFramesPerVideo) * kAudioChannels);
+    int64_t audio_samples_fed = 0;
+    for (int i = 0; i < kVideoFrameCount; ++i) {
+        for (int f = 0; f < kAudioFramesPerVideo; ++f) {
+            const double t = static_cast<double>(audio_samples_fed + f) / kAudioRate;
+            const float sample =
+                static_cast<float>(0.5 * std::sin(2.0 * kPi * 440.0 * t));
+            pcm[static_cast<size_t>(f) * kAudioChannels + 0] = sample;
+            pcm[static_cast<size_t>(f) * kAudioChannels + 1] = sample;
+        }
+        REQUIRE(audio.Encode(pcm.data(), kAudioFramesPerVideo, write_audio));
+        audio_samples_fed += kAudioFramesPerVideo;
+
+        nv12[0] = static_cast<uint8_t>((i * 37) & 0xFF);
+        nv12[1] = static_cast<uint8_t>((i * 73) & 0xFF);
+        d3d.context()->UpdateSubresource(texture.Get(), 0, nullptr, nv12.data(),
+                                         kWidth, kWidth * kHeight);
+        REQUIRE(encoder.Encode(texture.Get(), i * kFrameUs, write_video));
+    }
+    REQUIRE(audio.Flush(write_audio));
+    REQUIRE(encoder.Flush(write_video));
+    REQUIRE(muxer.Close());
+    REQUIRE(std::filesystem::file_size(output.path) > 0);
+
+    AVFormatContext* format = nullptr;
+    REQUIRE(avformat_open_input(&format, path.c_str(), nullptr, nullptr) >= 0);
+    REQUIRE(format != nullptr);
+    REQUIRE(avformat_find_stream_info(format, nullptr) >= 0);
+
+    CHECK(format->nb_streams == 2);
+    const int video_index =
+        av_find_best_stream(format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    const int audio_index =
+        av_find_best_stream(format, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    REQUIRE(video_index >= 0);
+    REQUIRE(audio_index >= 0);
+
+    const AVStream* video_stream = format->streams[video_index];
+    const AVStream* audio_stream = format->streams[audio_index];
+    CHECK(video_stream->codecpar->codec_id == test_case.video_codec_id);
+    CHECK(video_stream->codecpar->width == kWidth);
+    CHECK(video_stream->codecpar->height == kHeight);
+    CHECK(video_stream->codecpar->extradata_size > 0);
+    if (test_case.video_codec_tag != 0) {
+        CHECK(video_stream->codecpar->codec_tag == test_case.video_codec_tag);
+    }
+    CHECK(audio_stream->codecpar->codec_id == test_case.audio_codec_id);
+    CHECK(audio_stream->codecpar->sample_rate == kAudioRate);
+    CHECK(audio_stream->codecpar->ch_layout.nb_channels == kAudioChannels);
+
+    const AVCodec* video_decoder =
+        avcodec_find_decoder(test_case.video_codec_id);
+    REQUIRE(video_decoder != nullptr);
+    AVCodecContext* video_context = avcodec_alloc_context3(video_decoder);
+    REQUIRE(video_context != nullptr);
+    REQUIRE(avcodec_parameters_to_context(video_context,
+                                          video_stream->codecpar) >= 0);
+    REQUIRE(avcodec_open2(video_context, video_decoder, nullptr) >= 0);
+
+    const AVCodec* audio_decoder =
+        avcodec_find_decoder(test_case.audio_codec_id);
+    REQUIRE(audio_decoder != nullptr);
+    AVCodecContext* audio_context = avcodec_alloc_context3(audio_decoder);
+    REQUIRE(audio_context != nullptr);
+    REQUIRE(avcodec_parameters_to_context(audio_context,
+                                          audio_stream->codecpar) >= 0);
+    REQUIRE(avcodec_open2(audio_context, audio_decoder, nullptr) >= 0);
+
+    AVPacket* packet = av_packet_alloc();
+    AVFrame* frame = av_frame_alloc();
+    REQUIRE(packet != nullptr);
+    REQUIRE(frame != nullptr);
+
+    ContainerDecodeResult result;
+    int video_packets_demuxed = 0;
+    int read_result = 0;
+    while ((read_result = av_read_frame(format, packet)) >= 0) {
+        if (packet->stream_index == video_index) {
+            ++video_packets_demuxed;
+            REQUIRE(avcodec_send_packet(video_context, packet) >= 0);
+            int receive = 0;
+            while ((receive = avcodec_receive_frame(video_context, frame)) >= 0) {
+                ++result.video_frames;
+                av_frame_unref(frame);
+            }
+            REQUIRE((receive == AVERROR(EAGAIN) || receive == AVERROR_EOF));
+        } else if (packet->stream_index == audio_index) {
+            ++result.audio_packets;
+            if (result.first_audio_pts == AV_NOPTS_VALUE) {
+                result.first_audio_pts = packet->pts;
+            }
+            REQUIRE(avcodec_send_packet(audio_context, packet) >= 0);
+            int receive = 0;
+            while ((receive = avcodec_receive_frame(audio_context, frame)) >= 0) {
+                ++result.audio_frames;
+                result.audio_samples += frame->nb_samples;
+                CHECK(frame->sample_rate == kAudioRate);
+                CHECK(frame->ch_layout.nb_channels == kAudioChannels);
+                av_frame_unref(frame);
+            }
+            REQUIRE((receive == AVERROR(EAGAIN) || receive == AVERROR_EOF));
+        }
+        av_packet_unref(packet);
+    }
+    REQUIRE(read_result == AVERROR_EOF);
+
+    REQUIRE(avcodec_send_packet(video_context, nullptr) >= 0);
+    int video_drain = 0;
+    while ((video_drain = avcodec_receive_frame(video_context, frame)) >= 0) {
+        ++result.video_frames;
+        av_frame_unref(frame);
+    }
+    REQUIRE((video_drain == AVERROR_EOF || video_drain == AVERROR(EAGAIN)));
+
+    REQUIRE(avcodec_send_packet(audio_context, nullptr) >= 0);
+    int audio_drain = 0;
+    while ((audio_drain = avcodec_receive_frame(audio_context, frame)) >= 0) {
+        ++result.audio_frames;
+        result.audio_samples += frame->nb_samples;
+        av_frame_unref(frame);
+    }
+    REQUIRE((audio_drain == AVERROR_EOF || audio_drain == AVERROR(EAGAIN)));
+
+    INFO("path=" << path << " written video=" << video_packets_written
+                 << " audio=" << audio_packets_written
+                 << " demuxed video=" << video_packets_demuxed
+                 << " decoded video=" << result.video_frames
+                 << " decoded audio packets=" << result.audio_packets
+                 << " frames=" << result.audio_frames
+                 << " samples=" << result.audio_samples
+                 << " fed=" << audio_samples_fed
+                 << " first audio pts=" << result.first_audio_pts);
+    CHECK(video_packets_written >= kVideoFrameCount);
+    CHECK(video_packets_demuxed >= kVideoFrameCount);
+    CHECK(result.video_frames >= kVideoFrameCount);
+    CHECK(audio_packets_written > 0);
+    CHECK(result.audio_packets > 0);
+    CHECK(result.audio_frames > 0);
+    if (test_case.audio_codec == hmmob::AudioCodec::PcmS16Le) {
+        // PCM has no priming: the timeline starts at zero and every fed
+        // sample is decoded back.
+        CHECK(result.first_audio_pts == 0);
+        CHECK(result.audio_samples == audio_samples_fed);
+    } else {
+        // AAC adds the encoder's priming delay.
+        CHECK(result.audio_samples >= audio_samples_fed);
+    }
+
+    av_frame_free(&frame);
+    av_packet_free(&packet);
+    avcodec_free_context(&audio_context);
+    avcodec_free_context(&video_context);
+    avformat_close_input(&format);
 }
 
 }  // namespace
@@ -898,4 +1165,68 @@ TEST_CASE("FfmpegMuxer rejects audio packets when audio is disabled", "[mux]") {
     const Bytes keyframe = SyntheticH264Keyframe();
     REQUIRE(muxer.WritePacket(keyframe.data(), keyframe.size(), 0, true));
     REQUIRE(muxer.Close());
+}
+
+TEST_CASE("FfmpegMuxer writes decodable files for every supported container",
+          "[integration][amf]") {
+    const ContainerCase test_case = GENERATE(Catch::Generators::values<ContainerCase>({
+        kContainerCases[0], kContainerCases[1], kContainerCases[2],
+        kContainerCases[3], kContainerCases[4], kContainerCases[5],
+        kContainerCases[6]}));
+    CAPTURE(test_case.name);
+    RunContainerCase(test_case);
+}
+
+TEST_CASE("FfmpegMuxer rejects HEVC in FLV", "[mux]") {
+    TempFile output{UniqueTempPath("hevc-flv", ".flv")};
+    hmmob::FfmpegMuxer muxer;
+    CHECK_FALSE(muxer.Open(output.path.string(), "hevc", kWidth, kHeight,
+                           kFps, kBitrate));
+    CHECK_FALSE(std::filesystem::exists(output.path));
+    CHECK(muxer.Close());
+}
+
+TEST_CASE("FfmpegMuxer rejects HEVC in AVI", "[mux]") {
+    TempFile output{UniqueTempPath("hevc-avi", ".avi")};
+    hmmob::FfmpegMuxer muxer;
+    CHECK_FALSE(muxer.Open(output.path.string(), "hevc", kWidth, kHeight,
+                           kFps, kBitrate));
+    CHECK_FALSE(std::filesystem::exists(output.path));
+    CHECK(muxer.Close());
+}
+
+TEST_CASE("FfmpegMuxer rejects PCM audio in FLV", "[mux]") {
+    TempFile output{UniqueTempPath("pcm-flv", ".flv")};
+    hmmob::AudioConfig audio;
+    audio.enabled = true;
+    audio.codec = hmmob::AudioCodec::PcmS16Le;
+    audio.sample_rate = 48000;
+    audio.channels = 2;
+    audio.frame_size = 1024;
+
+    hmmob::FfmpegMuxer muxer;
+    CHECK_FALSE(muxer.Open(output.path.string(), "h264", kWidth, kHeight,
+                           kFps, kBitrate, audio));
+    CHECK_FALSE(std::filesystem::exists(output.path));
+    CHECK(muxer.Close());
+}
+
+TEST_CASE("FfmpegMuxer rejects unknown output extensions", "[mux]") {
+    SECTION("unknown extension") {
+        TempFile output{UniqueTempPath("unknown-ext", ".xyz")};
+        hmmob::FfmpegMuxer muxer;
+        CHECK_FALSE(muxer.Open(output.path.string(), "h264", kWidth, kHeight,
+                               kFps, kBitrate));
+        CHECK_FALSE(std::filesystem::exists(output.path));
+        CHECK(muxer.Close());
+    }
+    SECTION("no extension") {
+        // UniqueTempPath("") produces no dot, so the path has no extension.
+        TempFile output{UniqueTempPath("no-ext", "")};
+        hmmob::FfmpegMuxer muxer;
+        CHECK_FALSE(muxer.Open(output.path.string(), "h264", kWidth, kHeight,
+                               kFps, kBitrate));
+        CHECK_FALSE(std::filesystem::exists(output.path));
+        CHECK(muxer.Close());
+    }
 }

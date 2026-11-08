@@ -2,6 +2,7 @@
 
 #include <dwmapi.h>
 
+#include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -12,6 +13,7 @@
 #include <thread>
 #include <vector>
 
+#include "core/audio/AudioCodec.h"
 #include "core/capture/CameraSource.h"
 #include "core/recorder/Recorder.h"
 
@@ -39,6 +41,9 @@ struct Options {
     bool microphone = true;
     float system_volume = 1.0f;
     float mic_volume = 1.0f;
+    std::string audio_format = "aac";
+    int sample_rate = 48000;
+    int audio_bitrate = 192000;
 };
 
 enum class ParseResult { Ok, Help, Error };
@@ -46,7 +51,9 @@ enum class ParseResult { Ok, Help, Error };
 void PrintUsage(std::FILE* stream) {
     std::fprintf(stream,
                  "usage: evspike [options]\n"
-                 "  --output <path>         output MP4 path (default: out.mp4)\n"
+                 "  --output <path>         output path; the container comes from the\n"
+                 "                          extension: .mp4 .mov .mkv .avi .flv .wmv\n"
+                 "                          (default: out.mp4)\n"
                  "  --seconds <n>           recording length in seconds, > 0 (default: 10)\n"
                  "  --fps <n>               target frame rate, 1..1000 (default: 60)\n"
                  "  --codec <name>          hevc or h264 (default: hevc)\n"
@@ -62,6 +69,9 @@ void PrintUsage(std::FILE* stream) {
                  "  --no-mic                disable microphone\n"
                  "  --system-volume <x>     system audio gain, 0..4 (default: 1.0)\n"
                  "  --mic-volume <x>        microphone gain, 0..4 (default: 1.0)\n"
+                 "  --audio-format <name>   aac or pcm (default: aac)\n"
+                 "  --sample-rate <n>       audio sample rate, 44100 or 48000 (default: 48000)\n"
+                 "  --audio-bitrate <bps>   AAC bitrate, 96000..320000 (default: 192000)\n"
                  "  -h, --help              show this help and exit\n");
 }
 
@@ -93,6 +103,27 @@ bool ParseFloat(const char* text, float& out) {
     }
     out = value;
     return true;
+}
+
+// Lowercased extension including the dot, or empty when there is none.
+std::string LowerExtension(const std::string& path) {
+    const size_t slash = path.find_last_of("/\\");
+    const size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos ||
+        (slash != std::string::npos && dot < slash)) {
+        return {};
+    }
+    std::string extension = path.substr(dot);
+    for (char& character : extension) {
+        character = static_cast<char>(
+            std::tolower(static_cast<unsigned char>(character)));
+    }
+    return extension;
+}
+
+bool IsSupportedOutputExtension(const std::string& extension) {
+    return extension == ".mp4" || extension == ".mov" || extension == ".mkv" ||
+           extension == ".avi" || extension == ".flv" || extension == ".wmv";
 }
 
 bool ParseRegion(const char* text, int (&values)[4]) {
@@ -206,6 +237,22 @@ ParseResult Parse(int argc, char** argv, Options& options) {
             const char* v = next("--mic-volume");
             if (!v || !ParseFloat(v, options.mic_volume)) {
                 std::fprintf(stderr, "invalid value for --mic-volume\n");
+                return ParseResult::Error;
+            }
+        } else if (arg == "--audio-format") {
+            const char* v = next("--audio-format");
+            if (!v) return ParseResult::Error;
+            options.audio_format = v;
+        } else if (arg == "--sample-rate") {
+            const char* v = next("--sample-rate");
+            if (!v || !ParseInt(v, options.sample_rate)) {
+                std::fprintf(stderr, "invalid value for --sample-rate\n");
+                return ParseResult::Error;
+            }
+        } else if (arg == "--audio-bitrate") {
+            const char* v = next("--audio-bitrate");
+            if (!v || !ParseInt(v, options.audio_bitrate)) {
+                std::fprintf(stderr, "invalid value for --audio-bitrate\n");
                 return ParseResult::Error;
             }
         } else {
@@ -380,6 +427,49 @@ int main(int argc, char** argv) {
         PrintUsage(stderr);
         return 1;
     }
+    if (options.audio_format != "aac" && options.audio_format != "pcm") {
+        std::fprintf(stderr, "--audio-format must be aac or pcm\n");
+        return 1;
+    }
+    if (options.sample_rate != 44100 && options.sample_rate != 48000) {
+        std::fprintf(stderr, "--sample-rate must be 44100 or 48000\n");
+        return 1;
+    }
+    if (options.audio_bitrate <= 0) {
+        std::fprintf(stderr, "--audio-bitrate must be positive\n");
+        return 1;
+    }
+    if (options.audio_format == "aac" &&
+        (options.audio_bitrate < 96000 || options.audio_bitrate > 320000)) {
+        std::fprintf(stderr,
+                     "--audio-bitrate must be between 96000 and 320000 for AAC\n");
+        return 1;
+    }
+    const std::string output_extension = LowerExtension(options.output);
+    if (!IsSupportedOutputExtension(output_extension)) {
+        std::fprintf(stderr,
+                     "output path must end with .mp4, .mov, .mkv, .avi, .flv or "
+                     ".wmv\n");
+        return 1;
+    }
+    // Surface container/codec conflicts here so the CLI reports them directly
+    // instead of failing inside the recorder's muxer setup.
+    const bool audio_requested =
+        options.audio && (options.system_audio || options.microphone);
+    if (options.codec == "hevc" && (output_extension == ".avi" ||
+                                    output_extension == ".flv" ||
+                                    output_extension == ".wmv")) {
+        std::fprintf(stderr,
+                     "HEVC is not supported in %s output; use --codec h264\n",
+                     output_extension.c_str());
+        return 1;
+    }
+    if (audio_requested && options.audio_format == "pcm" &&
+        output_extension == ".flv") {
+        std::fprintf(stderr,
+                     "FLV does not support PCM audio; use --audio-format aac\n");
+        return 1;
+    }
 
     hmmob::RecorderConfig config;
     config.display_index = options.display;
@@ -410,6 +500,11 @@ int main(int argc, char** argv) {
     config.microphone = options.audio && options.microphone;
     config.system_gain = options.system_volume;
     config.mic_gain = options.mic_volume;
+    config.audio_codec = options.audio_format == "pcm"
+                             ? hmmob::AudioCodec::PcmS16Le
+                             : hmmob::AudioCodec::Aac;
+    config.audio_sample_rate = options.sample_rate;
+    config.audio_bitrate = options.audio_bitrate;
     config.output_path = options.output;
     config.duration_seconds = options.seconds;
 

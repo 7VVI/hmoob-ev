@@ -32,6 +32,7 @@ add_library(hmmob_core STATIC
   src/core/mux/FfmpegMuxer.cpp
   src/core/audio/AudioMixer.cpp
   src/core/audio/AacEncoder.cpp
+  src/core/audio/AudioEncoder.cpp
   src/core/audio/WasapiCapture.cpp
   src/core/preview/DesktopPreview.cpp
   src/core/recorder/Recorder.cpp
@@ -133,6 +134,7 @@ if(BUILD_TESTING)
     tests/test_pcm_ring_buffer.cpp
     tests/test_audio_mixer.cpp
     tests/test_aac_encoder.cpp
+    tests/test_pcm_encoder.cpp
     tests/test_wasapi_capture.cpp
     tests/test_desktop_preview.cpp
     tests/test_window_source.cpp

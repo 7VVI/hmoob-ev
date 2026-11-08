@@ -9,7 +9,7 @@
 #include <objbase.h>
 #include <utility>
 
-#include "core/audio/AacEncoder.h"
+#include "core/audio/AudioEncoder.h"
 #include "core/audio/AudioMixer.h"
 #include "core/audio/WasapiCapture.h"
 #include "core/capture/CameraSource.h"
@@ -337,9 +337,8 @@ void Recorder::Impl::Run() {
         return;
     }
 
-    constexpr int kAudioSampleRate = 48000;
+    const int audio_sample_rate = config.audio_sample_rate;
     constexpr int kAudioChannels = 2;
-    constexpr int kAudioBitrate = 192000;
 
     WasapiCapture system_capture;
     WasapiCapture mic_capture;
@@ -348,7 +347,7 @@ void Recorder::Impl::Run() {
     bool mic_ok = false;
 
     if (config.system_audio) {
-        system_ok = system_capture.Initialize(true, kAudioSampleRate,
+        system_ok = system_capture.Initialize(true, audio_sample_rate,
                                               kAudioChannels) &&
                     system_capture.Start();
         if (!system_ok) {
@@ -357,7 +356,7 @@ void Recorder::Impl::Run() {
         }
     }
     if (config.microphone) {
-        mic_ok = mic_capture.Initialize(false, kAudioSampleRate,
+        mic_ok = mic_capture.Initialize(false, audio_sample_rate,
                                         kAudioChannels) &&
                  mic_capture.Start();
         if (!mic_ok) {
@@ -367,16 +366,17 @@ void Recorder::Impl::Run() {
     }
     audio_enabled = audio_enabled && (system_ok || mic_ok);
 
-    AudioMixer audio_mixer(kAudioSampleRate, kAudioChannels);
+    AudioMixer audio_mixer(audio_sample_rate, kAudioChannels);
     if (system_ok) audio_mixer.SetSystemSource(system_capture.ring());
     if (mic_ok) audio_mixer.SetMicSource(mic_capture.ring());
     audio_mixer.SetSystemGain(config.system_gain);
     audio_mixer.SetMicGain(config.mic_gain);
 
-    AacEncoder aac;
+    AudioEncoder audio;
     if (audio_enabled &&
-        !aac.Initialize(kAudioSampleRate, kAudioChannels, kAudioBitrate)) {
-        ReportWarning("warning: AAC encoder unavailable; recording video only");
+        !audio.Initialize(audio_sample_rate, kAudioChannels,
+                          config.audio_bitrate, config.audio_codec)) {
+        ReportWarning("warning: audio encoder unavailable; recording video only");
         audio_enabled = false;
         system_capture.Stop();
         mic_capture.Stop();
@@ -388,12 +388,13 @@ void Recorder::Impl::Run() {
     AudioConfig audio_config;
     audio_config.enabled = audio_enabled;
     if (audio_enabled) {
-        audio_config.sample_rate = aac.sample_rate();
-        audio_config.channels = aac.channels();
-        audio_config.bitrate = aac.bitrate();
-        audio_config.frame_size = aac.frame_size();
-        audio_config.initial_padding = aac.initial_padding_samples();
-        audio_config.extradata = aac.extradata();
+        audio_config.codec = audio.codec();
+        audio_config.sample_rate = audio.sample_rate();
+        audio_config.channels = audio.channels();
+        audio_config.bitrate = audio.bitrate();
+        audio_config.frame_size = audio.frame_size();
+        audio_config.initial_padding = audio.initial_padding_samples();
+        audio_config.extradata = audio.extradata();
     }
 
     FfmpegMuxer muxer;
@@ -483,7 +484,7 @@ void Recorder::Impl::Run() {
     std::vector<float> audio_buffer;
     const auto on_audio_packet = [&](const AacPacket& packet) {
         const int64_t pts_us =
-            packet.pts_samples * 1'000'000 / kAudioSampleRate;
+            packet.pts_samples * 1'000'000 / audio_sample_rate;
         if (!muxer.WriteAudioPacket(packet.data.data(), packet.data.size(),
                                     pts_us, packet.duration_samples)) {
             write_failed = true;
@@ -628,15 +629,15 @@ void Recorder::Impl::Run() {
             if (audio_enabled) {
                 const int64_t target_samples =
                     static_cast<int64_t>(encoded_frames + 1) *
-                    kAudioSampleRate / config.fps;
+                    audio_sample_rate / config.fps;
                 const int frames_to_mix =
                     static_cast<int>(target_samples - audio_samples_written);
                 if (frames_to_mix > 0) {
                     audio_buffer.resize(
                         static_cast<size_t>(frames_to_mix) * kAudioChannels);
                     audio_mixer.Mix(audio_buffer.data(), frames_to_mix);
-                    if (!aac.Encode(audio_buffer.data(), frames_to_mix,
-                                    on_audio_packet)) {
+                    if (!audio.Encode(audio_buffer.data(), frames_to_mix,
+                                      on_audio_packet)) {
                         char message[96];
                         std::snprintf(message, sizeof(message),
                                       "audio encode failed at frame %d",
@@ -694,12 +695,12 @@ void Recorder::Impl::Run() {
     } else if (write_failed) {
         fail("muxer write failed during encoder flush");
     } else if (audio_track && !audio_encode_failed) {
-        // Flush even if both captures failed mid-recording: the AAC track was
-        // already declared in the header and must not end abruptly.
-        if (!aac.Flush(on_audio_packet)) {
-            fail("AAC flush failed");
+        // Flush even if both captures failed mid-recording: the audio track
+        // was already declared in the header and must not end abruptly.
+        if (!audio.Flush(on_audio_packet)) {
+            fail("audio flush failed");
         } else if (write_failed) {
-            fail("muxer write failed during AAC flush");
+            fail("muxer write failed during audio flush");
         }
     }
     if (!muxer.Close()) {

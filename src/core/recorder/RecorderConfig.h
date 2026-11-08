@@ -2,6 +2,8 @@
 #include <cstdint>
 #include <string>
 
+#include "core/audio/AudioCodec.h"
+
 namespace hmmob {
 
 enum class CaptureMode { Screen, Region, Window, Camera };
@@ -24,6 +26,12 @@ struct RecorderConfig {
     bool microphone = true;
     float system_gain = 1.0f;
     float mic_gain = 1.0f;
+    // Audio track format. The container is chosen from output_path's
+    // extension; sample_rate must be 44100 or 48000 and bitrate is used for
+    // AAC only (96000..320000).
+    AudioCodec audio_codec = AudioCodec::Aac;
+    int audio_sample_rate = 48000;
+    int audio_bitrate = 192000;
     std::string output_path;
     // 0 = record until RequestStop(); > 0 = stop after this many seconds.
     int duration_seconds = 0;

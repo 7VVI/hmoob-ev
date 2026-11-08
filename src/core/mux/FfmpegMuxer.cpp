@@ -7,10 +7,13 @@ extern "C" {
 #include <libavutil/error.h>
 #include <libavutil/macros.h>
 #include <libavutil/mem.h>
+#include <libavutil/opt.h>
 }
 
+#include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "core/mux/AnnexBInternal.h"
@@ -26,6 +29,26 @@ namespace hmmob {
 namespace {
 
 constexpr AVRational kMicrosecondTimeBase{1, 1000000};
+// Both audio backends emit 1024-sample packets.
+constexpr int kAudioFrameSize = 1024;
+
+enum class Container { Mp4, Mov, Mkv, Avi, Flv, Wmv };
+
+struct ContainerInfo {
+    Container container;
+    const char* muxer;
+    const char* extension;
+    const char* name;
+};
+
+constexpr ContainerInfo kContainers[] = {
+    {Container::Mp4, "mp4", ".mp4", "MP4"},
+    {Container::Mov, "mov", ".mov", "MOV"},
+    {Container::Mkv, "matroska", ".mkv", "MKV"},
+    {Container::Avi, "avi", ".avi", "AVI"},
+    {Container::Flv, "flv", ".flv", "FLV"},
+    {Container::Wmv, "asf", ".wmv", "WMV"},
+};
 
 bool IsSupportedCodec(const std::string& codec) {
     return codec == "hevc" || codec == "h264";
@@ -33,6 +56,124 @@ bool IsSupportedCodec(const std::string& codec) {
 
 AVCodecID CodecIdFor(const std::string& codec) {
     return codec == "hevc" ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264;
+}
+
+// Lowercased extension including the dot, or empty when the path has none.
+std::string LowerExtension(const std::string& path) {
+    const size_t slash = path.find_last_of("/\\");
+    const size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos ||
+        (slash != std::string::npos && dot < slash)) {
+        return {};
+    }
+    std::string extension = path.substr(dot);
+    for (char& character : extension) {
+        character = static_cast<char>(
+            std::tolower(static_cast<unsigned char>(character)));
+    }
+    return extension;
+}
+
+const ContainerInfo* FindContainer(const std::string& path) {
+    const std::string extension = LowerExtension(path);
+    if (extension.empty()) {
+        return nullptr;
+    }
+    for (const ContainerInfo& info : kContainers) {
+        if (extension == info.extension) {
+            return &info;
+        }
+    }
+    return nullptr;
+}
+
+const char* ContainerName(Container container) {
+    for (const ContainerInfo& info : kContainers) {
+        if (info.container == container) {
+            return info.name;
+        }
+    }
+    return "unknown";
+}
+
+const char* MuxerName(Container container) {
+    for (const ContainerInfo& info : kContainers) {
+        if (info.container == container) {
+            return info.muxer;
+        }
+    }
+    return "mp4";
+}
+
+bool SupportsFastStart(Container container) {
+    return container == Container::Mp4 || container == Container::Mov;
+}
+
+// AVI stores H.264 as an Annex B byte stream (avienc rejects AVC length-
+// prefixed samples), and ASF follows the same convention. Matroska, MP4/MOV
+// and FLV take 4-byte length-prefixed samples with avcC/hvcC extradata.
+bool UsesAnnexB(Container container) {
+    return container == Container::Avi || container == Container::Wmv;
+}
+
+// Annex B parameter sets for the containers that cannot carry avcC.
+std::vector<uint8_t> BuildAnnexBExtradata(const std::string& codec,
+                                          const uint8_t* data, size_t size) {
+    const bool hevc = codec == "hevc";
+    const std::vector<detail::NalUnit> nals =
+        detail::ParseAnnexB(data, size, hevc);
+    constexpr uint8_t kStartCode[] = {0x00, 0x00, 0x00, 0x01};
+    std::vector<uint8_t> out;
+    for (const detail::NalUnit& nal : nals) {
+        if (!detail::IsParameterSetNal(nal.type, hevc)) {
+            continue;
+        }
+        out.insert(out.end(), kStartCode, kStartCode + sizeof(kStartCode));
+        out.insert(out.end(), nal.data, nal.data + nal.size);
+    }
+    return out;
+}
+
+// Selects the FourCC each container expects for H.264/HEVC. MP4/MOV want
+// avc1/hvc1, AVI/ASF use their H264 FourCC, and Matroska/FLV derive the codec
+// from the track type and extradata instead.
+uint32_t VideoCodecTag(Container container, const std::string& codec) {
+    const bool hevc = codec == "hevc";
+    switch (container) {
+        case Container::Mp4:
+        case Container::Mov:
+            return hevc ? MKTAG('h', 'v', 'c', '1') : MKTAG('a', 'v', 'c', '1');
+        case Container::Avi:
+        case Container::Wmv:
+            return MKTAG('H', '2', '6', '4');
+        case Container::Mkv:
+        case Container::Flv:
+            return 0;
+    }
+    return 0;
+}
+
+// Fails Open with a readable diagnostic for combinations a container cannot
+// represent.
+bool ValidateCombination(Container container, const std::string& codec,
+                         const AudioConfig& audio) {
+    const bool hevc = codec == "hevc";
+    const bool pcm = audio.enabled && audio.codec == AudioCodec::PcmS16Le;
+    if (hevc && (container == Container::Avi || container == Container::Flv ||
+                 container == Container::Wmv)) {
+        std::fprintf(stderr,
+                     "FfmpegMuxer: HEVC is not supported in the %s container; "
+                     "use H.264\n",
+                     ContainerName(container));
+        return false;
+    }
+    if (pcm && container == Container::Flv) {
+        std::fprintf(stderr,
+                     "FfmpegMuxer: the FLV container does not support PCM "
+                     "audio; use AAC\n");
+        return false;
+    }
+    return true;
 }
 
 void LogAvError(const char* what, int error) {
@@ -61,6 +202,8 @@ struct FfmpegMuxer::Impl {
     AVStream* stream = nullptr;
     AVStream* audio_stream = nullptr;
     std::string codec;
+    Container container = Container::Mp4;
+    int fps = 0;
     struct PendingAudio {
         std::vector<uint8_t> data;
         int64_t pts_us;
@@ -86,25 +229,63 @@ bool FfmpegMuxer::Open(const std::string& path, const std::string& codec,
         std::fprintf(stderr, "FfmpegMuxer: invalid Open arguments\n");
         return false;
     }
-    if (audio.enabled &&
-        (audio.sample_rate <= 0 || audio.channels <= 0 || audio.channels > 8 ||
-         audio.bitrate <= 0 || audio.frame_size <= 0)) {
-        std::fprintf(stderr, "FfmpegMuxer: invalid audio configuration\n");
+
+    const ContainerInfo* container_info = FindContainer(path);
+    if (!container_info) {
+        const std::string extension = LowerExtension(path);
+        std::fprintf(stderr,
+                     "FfmpegMuxer: unsupported output extension \"%s\"; use "
+                     ".mp4, .mov, .mkv, .avi, .flv or .wmv\n",
+                     extension.empty() ? "(none)" : extension.c_str());
         return false;
     }
-    if (audio.enabled && audio.extradata.empty()) {
-        std::fprintf(stderr,
-                     "FfmpegMuxer: audio enabled without AudioSpecificConfig\n");
+    if (!ValidateCombination(container_info->container, codec, audio)) {
         return false;
+    }
+
+    const bool pcm_audio =
+        audio.enabled && audio.codec == AudioCodec::PcmS16Le;
+    if (audio.enabled) {
+        if (audio.sample_rate != 44100 && audio.sample_rate != 48000) {
+            std::fprintf(stderr,
+                         "FfmpegMuxer: audio sample rate %d is not supported; "
+                         "use 44100 or 48000\n",
+                         audio.sample_rate);
+            return false;
+        }
+        if (audio.channels != 1 && audio.channels != 2) {
+            std::fprintf(stderr,
+                         "FfmpegMuxer: unsupported audio channel count %d; "
+                         "use mono or stereo\n",
+                         audio.channels);
+            return false;
+        }
+        if (audio.bitrate <= 0) {
+            std::fprintf(stderr, "FfmpegMuxer: invalid audio bitrate %d\n",
+                         audio.bitrate);
+            return false;
+        }
+        if (!pcm_audio &&
+            (audio.frame_size <= 0 || audio.extradata.empty())) {
+            std::fprintf(
+                stderr,
+                "FfmpegMuxer: AAC audio requires a frame size and "
+                "AudioSpecificConfig\n");
+            return false;
+        }
     }
 
     impl_ = new Impl();
     impl_->codec = codec;
+    impl_->container = container_info->container;
+    impl_->fps = fps;
 
-    int result = avformat_alloc_output_context2(&impl_->format, nullptr, "mp4",
-                                                path.c_str());
+    int result = avformat_alloc_output_context2(
+        &impl_->format, nullptr, container_info->muxer, path.c_str());
     if (result < 0 || !impl_->format) {
         LogAvError("avformat_alloc_output_context2", result);
+        std::fprintf(stderr, "FfmpegMuxer: %s muxer unavailable\n",
+                     ContainerName(impl_->container));
         static_cast<void>(Close());
         return false;
     }
@@ -119,17 +300,19 @@ bool FfmpegMuxer::Open(const std::string& path, const std::string& codec,
     AVCodecParameters* parameters = impl_->stream->codecpar;
     parameters->codec_type = AVMEDIA_TYPE_VIDEO;
     parameters->codec_id = CodecIdFor(codec);
-    // avc1/hvc1 declare that parameter sets live in the extradata; the muxer
-    // strips them from the samples to match.
-    parameters->codec_tag = codec == "hevc" ? MKTAG('h', 'v', 'c', '1')
-                                            : MKTAG('a', 'v', 'c', '1');
+    // avc1/hvc1 (and the AVI/ASF FourCC) declare that parameter sets live in
+    // the extradata; the muxer strips them from the samples to match.
+    parameters->codec_tag = VideoCodecTag(impl_->container, codec);
     parameters->width = width;
     parameters->height = height;
     parameters->format = AV_PIX_FMT_YUV420P;
     parameters->bit_rate = bitrate;
 
-    // Microseconds match the timestamps AMF reports through AmfPacket.
-    impl_->stream->time_base = kMicrosecondTimeBase;
+    // Microseconds match the timestamps AMF reports through AmfPacket. AVI
+    // derives its frame rate from the video time base, so it uses 1/fps.
+    impl_->stream->time_base = impl_->container == Container::Avi
+                                   ? AVRational{1, fps}
+                                   : kMicrosecondTimeBase;
     impl_->stream->avg_frame_rate = AVRational{fps, 1};
     impl_->stream->r_frame_rate = AVRational{fps, 1};
 
@@ -142,7 +325,8 @@ bool FfmpegMuxer::Open(const std::string& path, const std::string& codec,
         }
         AVCodecParameters* audio_parameters = impl_->audio_stream->codecpar;
         audio_parameters->codec_type = AVMEDIA_TYPE_AUDIO;
-        audio_parameters->codec_id = AV_CODEC_ID_AAC;
+        audio_parameters->codec_id =
+            pcm_audio ? AV_CODEC_ID_PCM_S16LE : AV_CODEC_ID_AAC;
         audio_parameters->sample_rate = audio.sample_rate;
         av_channel_layout_default(&audio_parameters->ch_layout, audio.channels);
         if (audio_parameters->ch_layout.nb_channels != audio.channels) {
@@ -152,19 +336,33 @@ bool FfmpegMuxer::Open(const std::string& path, const std::string& codec,
             static_cast<void>(Close());
             return false;
         }
-        // Encoded AAC is not PCM; leave the sample format unspecified.
-        audio_parameters->format = AV_SAMPLE_FMT_NONE;
-        audio_parameters->frame_size = audio.frame_size;
-        audio_parameters->initial_padding = audio.initial_padding;
-        audio_parameters->bit_rate = audio.bitrate;
+        audio_parameters->format =
+            pcm_audio ? AV_SAMPLE_FMT_S16 : AV_SAMPLE_FMT_NONE;
+        // AVI derives its audio dwScale from codecpar->frame_size. A PCM
+        // "sample" there is one block (four bytes for stereo s16), while AAC
+        // packets really are 1024 samples, so the two differ.
+        const int audio_frame_size =
+            pcm_audio
+                ? (impl_->container == Container::Avi ? 1 : kAudioFrameSize)
+                : audio.frame_size;
+        audio_parameters->frame_size = audio_frame_size;
+        audio_parameters->initial_padding =
+            pcm_audio ? 0 : audio.initial_padding;
+        audio_parameters->bit_rate =
+            pcm_audio
+                ? audio.sample_rate * audio.channels * 16
+                : audio.bitrate;
         audio_parameters->codec_tag = 0;
-        // Audio is rejected above when extradata is empty.
-        if (!SetExtradata(audio_parameters, audio.extradata)) {
+        if (!pcm_audio && !SetExtradata(audio_parameters, audio.extradata)) {
             static_cast<void>(Close());
             return false;
         }
-        // AAC timestamps are expressed in samples.
-        impl_->audio_stream->time_base = AVRational{1, audio.sample_rate};
+        // Audio timestamps are expressed in samples, except in AVI where the
+        // muxer counts units of frame_size samples (dwScale / dwRate).
+        impl_->audio_stream->time_base =
+            impl_->container == Container::Avi
+                ? AVRational{audio_frame_size, audio.sample_rate}
+                : AVRational{1, audio.sample_rate};
     }
 
     result = avio_open(&impl_->format->pb, path.c_str(), AVIO_FLAG_WRITE);
@@ -192,7 +390,9 @@ bool FfmpegMuxer::WritePacket(const uint8_t* data, size_t size,
 
     if (!impl_->header_written) {
         const std::vector<uint8_t> extradata =
-            BuildCodecExtradata(impl_->codec, data, size);
+            UsesAnnexB(impl_->container)
+                ? BuildAnnexBExtradata(impl_->codec, data, size)
+                : BuildCodecExtradata(impl_->codec, data, size);
         if (extradata.empty()) {
             std::fprintf(stderr,
                          "FfmpegMuxer: first %s packet is missing SPS/PPS/VPS\n",
@@ -205,10 +405,19 @@ bool FfmpegMuxer::WritePacket(const uint8_t* data, size_t size,
             return false;
         }
 
-        AVDictionary* options = nullptr;
-        av_dict_set(&options, "movflags", "+faststart", 0);
-        const int result = avformat_write_header(impl_->format, &options);
-        av_dict_free(&options);
+        if (SupportsFastStart(impl_->container)) {
+            // Move the moov atom to the front so the file is playable before
+            // it is fully downloaded. A build without the option is not fatal.
+            const int faststart = av_opt_set(impl_->format->priv_data,
+                                             "movflags", "+faststart", 0);
+            if (faststart < 0) {
+                std::fprintf(stderr,
+                             "FfmpegMuxer: faststart unavailable (%d); "
+                             "writing a plain %s\n",
+                             faststart, ContainerName(impl_->container));
+            }
+        }
+        const int result = avformat_write_header(impl_->format, nullptr);
         if (result < 0) {
             LogAvError("avformat_write_header", result);
             impl_->write_failed = true;
@@ -231,8 +440,18 @@ bool FfmpegMuxer::WritePacket(const uint8_t* data, size_t size,
     }
 
     const bool hevc = impl_->codec == "hevc";
-    const std::vector<uint8_t> payload =
-        detail::AnnexBToLengthPrefixed(data, size, hevc);
+    std::vector<uint8_t> payload;
+    if (UsesAnnexB(impl_->container)) {
+        // AVI/ASF carry the original Annex B access unit, SPS/PPS included.
+        if (detail::ParseAnnexB(data, size, hevc).empty()) {
+            std::fprintf(stderr, "FfmpegMuxer: packet contains no NAL units\n");
+            impl_->write_failed = true;
+            return false;
+        }
+        payload.assign(data, data + size);
+    } else {
+        payload = detail::AnnexBToLengthPrefixed(data, size, hevc);
+    }
     if (payload.empty()) {
         std::fprintf(stderr, "FfmpegMuxer: packet contains no NAL units\n");
         impl_->write_failed = true;
@@ -252,6 +471,9 @@ bool FfmpegMuxer::WritePacket(const uint8_t* data, size_t size,
     std::memcpy(packet->data, payload.data(), payload.size());
     packet->pts = pts_us;
     packet->dts = pts_us;
+    // Some muxers (AVI, FLV, Matroska) use the last packet's duration for the
+    // container duration, so state the frame interval explicitly.
+    packet->duration = 1'000'000 / impl_->fps;
     packet->stream_index = impl_->stream->index;
     packet->flags = keyframe ? AV_PKT_FLAG_KEY : 0;
     av_packet_rescale_ts(packet, kMicrosecondTimeBase, impl_->stream->time_base);
@@ -333,12 +555,17 @@ bool FfmpegMuxer::WriteAudioPacket(const uint8_t* data, size_t size,
     packet->pts = pts_us;
     packet->dts = pts_us;
     packet->stream_index = impl_->audio_stream->index;
-    // The negative first PTS (AAC priming) is preserved: movenc turns it into
-    // the MP4 edit list instead of us clamping it to zero.
+    // Express the duration in microseconds first so the shared rescale below
+    // produces the right value in any stream time base (AVI counts blocks).
+    const int audio_sample_rate =
+        impl_->audio_stream->codecpar->sample_rate;
+    packet->duration =
+        audio_sample_rate > 0
+            ? duration_samples * 1'000'000 / audio_sample_rate
+            : 0;
+    // A negative first PTS (AAC priming) is preserved: movenc turns it into
+    // the MP4 edit list instead of us clamping it to zero. PCM starts at 0.
     av_packet_rescale_ts(packet, kMicrosecondTimeBase, impl_->audio_stream->time_base);
-    // After rescaling, the stream time base is 1/sample_rate, so the encoder's
-    // sample count is already a valid duration and must not be rescaled.
-    packet->duration = duration_samples;
 
     const int result = av_interleaved_write_frame(impl_->format, packet);
     av_packet_free(&packet);
@@ -355,9 +582,9 @@ bool FfmpegMuxer::Close() {
         return true;
     }
 
-    // A session that never wrote a header produced no MP4 (including when only
-    // audio was buffered), and a latched write failure means the output is
-    // incomplete; both are Close failures.
+    // A session that never wrote a header produced no output (including when
+    // only audio was buffered), and a latched write failure means the output
+    // is incomplete; both are Close failures.
     bool ok = impl_->header_written && !impl_->write_failed;
     if (!impl_->header_written && impl_->format && impl_->format->pb) {
         std::fprintf(stderr, "FfmpegMuxer: closing without a written header\n");
