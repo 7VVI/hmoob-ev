@@ -9,6 +9,7 @@
 
 #include "app/AppSettings.h"
 #include "app/IconRenderer.h"
+#include "app/Theme.h"
 #include "core/audio/AudioCodec.h"
 #include "core/gfx/D3D11Device.h"
 #include "core/preview/DesktopPreview.h"
@@ -84,8 +85,10 @@ private:
     QWidget* BuildAudioCard();
     QWidget* BuildVideoCard();
     QWidget* BuildBottomBar();
-    QLabel* MakeIconLabel(Icon icon, int size, const QColor& color,
-                          QWidget* parent);
+    QLabel* MakeIconLabel(Icon icon, int size, IconTone tone, QWidget* parent);
+    void ApplyTheme();
+    // Rebuilds every cached pixmap/icon from the current theme colors.
+    void RefreshThemedIcons();
     void PopulateDisplays();
     void PopulateCameras();
     void PopulateAudioDevices();
@@ -170,6 +173,16 @@ private:
     LevelMeter* mic_meter_ = nullptr;
     LevelMeter* system_meter_ = nullptr;
     QPushButton* settings_button_ = nullptr;
+    QPushButton* open_files_button_ = nullptr;
+
+    struct ThemedIconLabel {
+        QLabel* label = nullptr;
+        Icon icon = Icon::Play;
+        int size = 0;
+        IconTone tone = IconTone::Text;
+    };
+    std::vector<ThemedIconLabel> icon_labels_;
+    bool status_is_error_ = false;
 
     // Authoritative recording options edited by the settings dialog. They
     // survive the dialog and apply to the next recording.

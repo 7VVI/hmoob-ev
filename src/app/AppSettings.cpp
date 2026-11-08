@@ -88,6 +88,12 @@ AppSettings LoadAppSettings() {
     settings.auto_timestamp_filename =
         store.value(QStringLiteral("output/auto_timestamp"), true).toBool();
 
+    const QString language =
+        store.value(QStringLiteral("appearance/language")).toString();
+    if (!language.isEmpty()) {
+        settings.language = language;
+    }
+
     settings.auto_start =
         store.value(QStringLiteral("general/auto_start"), false).toBool();
     settings.minimize_to_tray_on_start =
@@ -136,6 +142,7 @@ void SaveAppSettings(const AppSettings& settings) {
                    settings.output_directory);
     store.setValue(QStringLiteral("output/auto_timestamp"),
                    settings.auto_timestamp_filename);
+    store.setValue(QStringLiteral("appearance/language"), settings.language);
     store.setValue(QStringLiteral("general/auto_start"), settings.auto_start);
     store.setValue(QStringLiteral("general/minimize_to_tray_on_start"),
                    settings.minimize_to_tray_on_start);

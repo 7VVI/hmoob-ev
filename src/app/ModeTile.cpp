@@ -3,6 +3,8 @@
 #include <QPainter>
 #include <QPaintEvent>
 
+#include "app/Theme.h"
+
 namespace {
 constexpr int kIconSize = 30;
 constexpr int kCheckSize = 20;
@@ -17,6 +19,8 @@ ModeTile::ModeTile(Icon icon, const QString& text, QWidget* parent)
     setMinimumHeight(76);
     setMaximumHeight(96);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    connect(&Theme::Instance(), &Theme::changed, this,
+            [this] { update(); });
 }
 
 QSize ModeTile::sizeHint() const {
@@ -44,21 +48,22 @@ void ModeTile::paintEvent(QPaintEvent* event) {
     QRectF tile(rect());
     tile.adjust(1.0, 1.0, -1.0, -1.0);
 
-    QColor fill(0xFF, 0xFF, 0xFF);
-    QColor border(0xE5, 0xE6, 0xEB);
+    const ThemeColors& colors = Theme::Instance().colors();
+    QColor fill = colors.tileBg;
+    QColor border = colors.tileBorder;
     if (selected) {
-        fill = QColor(0xEE, 0xF5, 0xFF);
-        border = QColor(0x2F, 0x6B, 0xFF);
+        fill = colors.tileSelectedBg;
+        border = colors.tileSelectedBorder;
     } else if (hover_) {
-        fill = QColor(0xF7, 0xF9, 0xFD);
-        border = QColor(0xD5, 0xDB, 0xE5);
+        fill = colors.tileHoverBg;
+        border = colors.tileHoverBorder;
     }
     painter.setBrush(fill);
     painter.setPen(QPen(border, selected ? 2.0 : 1.0));
     painter.drawRoundedRect(tile, 10.0, 10.0);
 
-    const QColor content = selected ? QColor(0x2F, 0x6B, 0xFF)
-                                    : QColor(0x4E, 0x59, 0x69);
+    const QColor content =
+        selected ? colors.primary : colors.textSecondary;
     const qreal icon_top = tile.top() + tile.height() * 0.24 - kIconSize / 2.0;
     const QRectF icon_rect((width() - kIconSize) / 2.0, icon_top, kIconSize,
                            kIconSize);
@@ -68,7 +73,7 @@ void ModeTile::paintEvent(QPaintEvent* event) {
     label_font.setPixelSize(15);
     label_font.setWeight(QFont::DemiBold);
     painter.setFont(label_font);
-    painter.setPen(selected ? QColor(0x2F, 0x6B, 0xFF) : QColor(0x1D, 0x21, 0x29));
+    painter.setPen(selected ? colors.primary : colors.text);
     painter.drawText(QRectF(0, height() - 34.0, width(), 24.0),
                      Qt::AlignHCenter | Qt::AlignVCenter, text_);
 
@@ -76,7 +81,7 @@ void ModeTile::paintEvent(QPaintEvent* event) {
         const QRectF badge(width() - kCheckSize - 8.0, 6.0, kCheckSize,
                            kCheckSize);
         painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(0x2F, 0x6B, 0xFF));
+        painter.setBrush(colors.primary);
         painter.drawEllipse(badge);
         IconRenderer::Paint(painter, Icon::Check, badge.adjusted(4, 4, -4, -4),
                             QColor(Qt::white), 2.6);

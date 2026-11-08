@@ -5,6 +5,8 @@
 #include <QRandomGenerator>
 #include <QTimer>
 
+#include "app/Theme.h"
+
 namespace {
 constexpr int kBars = 8;
 constexpr int kBarWidth = 6;
@@ -21,6 +23,8 @@ LevelMeter::LevelMeter(int seed, QWidget* parent)
     timer_->setInterval(150);
     connect(timer_, &QTimer::timeout, this, &LevelMeter::Tick);
     timer_->start();
+    connect(&Theme::Instance(), &Theme::changed, this,
+            [this] { update(); });
 }
 
 QSize LevelMeter::sizeHint() const {
@@ -74,8 +78,9 @@ void LevelMeter::paintEvent(QPaintEvent* event) {
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setPen(Qt::NoPen);
 
-    const QColor lit(0x2F, 0x6B, 0xFF);
-    const QColor unlit(0xE5, 0xE6, 0xEB);
+    const ThemeColors& colors = Theme::Instance().colors();
+    const QColor lit = colors.primary;
+    const QColor unlit = colors.tileBorder;
     const int y = (height() - kBarHeight) / 2;
     for (int i = 0; i < kBars; ++i) {
         const bool on = active_ && i < lit_;

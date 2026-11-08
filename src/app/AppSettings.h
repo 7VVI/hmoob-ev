@@ -34,6 +34,10 @@ struct AppSettings {
     QString output_directory;
     bool auto_timestamp_filename = true;
 
+    // Interface language. Only 简体中文 exists today; the value is stored so
+    // the choice survives even when more languages are added.
+    QString language = QStringLiteral("zh-CN");
+
     // General settings.
     bool auto_start = false;
     bool minimize_to_tray_on_start = false;

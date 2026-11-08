@@ -85,45 +85,57 @@ constexpr int kBottomBarHeight = 100;
 constexpr int kStatusHeight = 18;
 constexpr int kWindowResizeBorder = 7;
 
-const char* const kStyleSheet = R"(
-QWidget#root { background: #F5F7FC; }
-QWidget#navBar { background: #F5F7FC; }
+const char* const kStyleSheetTemplate = R"(
+QWidget#root { background: {window}; }
+QWidget#navBar { background: {window}; }
 QWidget#contentArea { background: transparent; }
-QWidget#bottomBar { background: #FAFBFD; border-top: 1px solid #EEF1F5; }
-QFrame#card { background: #FFFFFF; border: 1px solid #EDF0F5; border-radius: 12px; }
-QLabel { color: #1D2129; }
-QLabel#cardTitle { font-size: 16px; font-weight: 600; color: #1D2129; }
-QLabel#rowLabel { font-size: 14px; color: #1D2129; }
-QLabel#caption { font-size: 13px; color: #86909C; }
-QLabel#statValue { font-size: 16px; color: #1D2129; }
-QLabel#statusLabel { font-size: 13px; color: #86909C; }
-QPushButton#navAction { background: transparent; border: none; color: #4E5969; font-size: 15px; padding: 6px 8px; border-radius: 8px; }
-QPushButton#navAction:hover { background: #EDF2FA; }
-QPushButton#navAction:pressed { background: #E3EAF5; }
+QWidget#bottomBar { background: {bottomBar}; border-top: 1px solid {softBorder}; }
+QFrame#card { background: {card}; border: 1px solid {cardBorder}; border-radius: 12px; }
+QLabel { color: {text}; }
+QLabel#cardTitle { font-size: 16px; font-weight: 600; color: {text}; }
+QLabel#rowLabel { font-size: 14px; color: {text}; }
+QLabel#caption { font-size: 13px; color: {textMuted}; }
+QLabel#statValue { font-size: 16px; color: {text}; }
+QLabel#statusLabel { font-size: 13px; color: {textMuted}; }
+QLabel#secondaryLabel { font-size: 14px; color: {textSecondary}; }
+QWidget#vDivider { background: {divider}; }
+QPushButton#navAction { background: transparent; border: none; color: {textSecondary}; font-size: 15px; padding: 6px 8px; border-radius: 8px; }
+QPushButton#navAction:hover { background: {navActionHover}; }
+QPushButton#navAction:pressed { background: {navActionPressed}; }
+QPushButton#navAction:disabled { color: {disabledText}; }
 QPushButton#sourceToggle { background: transparent; border: none; border-radius: 8px; }
-QPushButton#sourceToggle:hover { background: #EDF0F5; }
+QPushButton#sourceToggle:hover { background: {hoverBg}; }
 QPushButton#iconButton { background: transparent; border: none; border-radius: 8px; }
-QPushButton#iconButton:hover { background: #EDF0F5; }
-QComboBox { background: #FFFFFF; border: 1px solid #E5E6EB; border-radius: 10px; padding: 0 10px 0 14px; font-size: 14px; color: #1D2129; }
-QComboBox:hover { border-color: #C9CDD4; }
-QComboBox:disabled { background: #F7F8FA; color: #A9AEB8; border-color: #EDF0F5; }
+QPushButton#iconButton:hover { background: {hoverBg}; }
+QComboBox { background: {inputBg}; border: 1px solid {inputBorder}; border-radius: 10px; padding: 0 10px 0 14px; font-size: 14px; color: {text}; }
+QComboBox:hover { border-color: {iconMuted}; }
+QComboBox:disabled { background: {disabledBg}; color: {disabledText}; border-color: {disabledBorder}; }
 QComboBox::drop-down { border: none; background: transparent; width: 34px; }
 QComboBox::down-arrow { image: none; width: 0px; height: 0px; }
-QComboBox QAbstractItemView { background: #FFFFFF; border: 1px solid #E5E6EB; border-radius: 8px; padding: 4px; outline: 0; selection-background-color: #EAF2FE; selection-color: #2F6BFF; }
+QComboBox QAbstractItemView { background: {menuBg}; border: 1px solid {menuBorder}; border-radius: 8px; padding: 4px; outline: 0; color: {text}; selection-background-color: {selectionBg}; selection-color: {selectionText}; }
 QComboBox QAbstractItemView::item { min-height: 30px; padding: 0 10px; }
-QFrame#pathBox { background: #F7F8FA; border: 1px solid #E5E6EB; border-radius: 10px; }
-QLineEdit#pathEdit { background: transparent; border: none; padding: 0px; font-size: 14px; color: #1D2129; selection-background-color: #2F6BFF; selection-color: #FFFFFF; }
-QLineEdit#pathEdit:disabled { color: #A9AEB8; }
+QComboBox QAbstractItemView::item:hover { background: {hoverBg}; }
+QFrame#pathBox { background: {pathBoxBg}; border: 1px solid {inputBorder}; border-radius: 10px; }
+QLineEdit#pathEdit { background: transparent; border: none; padding: 0px; font-size: 14px; color: {text}; selection-background-color: {primary}; selection-color: #FFFFFF; }
+QLineEdit#pathEdit:disabled { color: {disabledText}; }
 QPushButton#browseButton { background: transparent; border: none; border-radius: 8px; }
-QPushButton#browseButton:hover { background: #EDF0F5; }
+QPushButton#browseButton:hover { background: {hoverBg}; }
 QScrollArea#settingsScroll { background: transparent; border: none; }
 QScrollArea#settingsScroll > QWidget > QWidget { background: transparent; }
 QWidget#scrollContent { background: transparent; }
 QScrollBar:vertical { background: transparent; width: 8px; margin: 0px; }
-QScrollBar::handle:vertical { background: #D5DBE5; border-radius: 4px; min-height: 28px; }
-QScrollBar::handle:vertical:hover { background: #C2C9D6; }
+QScrollBar::handle:vertical { background: {scrollHandle}; border-radius: 4px; min-height: 28px; }
+QScrollBar::handle:vertical:hover { background: {scrollHandleHover}; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; background: transparent; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+QMenu { background: {menuBg}; border: 1px solid {menuBorder}; border-radius: 8px; padding: 4px; color: {text}; }
+QMenu::item { padding: 6px 24px 6px 14px; border-radius: 6px; }
+QMenu::item:selected { background: {selectionBg}; color: {selectionText}; }
+QMenu::item:disabled { color: {disabledText}; }
+QMenu::separator { height: 1px; background: {divider}; margin: 4px 8px; }
+QToolTip { background: {menuBg}; color: {text}; border: 1px solid {menuBorder}; padding: 4px 8px; }
+QMessageBox { background: {card}; }
+QMessageBox QLabel { color: {text}; }
 )";
 
 QString FormatDuration(int64_t elapsed_us) {
@@ -164,7 +176,8 @@ MainWindow::MainWindow(bool automation, QWidget* parent)
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint |
                    Qt::WindowMinimizeButtonHint |
                    Qt::WindowMaximizeButtonHint | Qt::WindowSystemMenuHint);
-    setStyleSheet(QString::fromUtf8(kStyleSheet));
+    setStyleSheet(Theme::Instance().Expand(
+        QString::fromUtf8(kStyleSheetTemplate)));
     resize(1400, 830);
     setMinimumSize(1024, 680);
 
@@ -174,6 +187,7 @@ MainWindow::MainWindow(bool automation, QWidget* parent)
     PopulateAudioDevices();
     ApplyPersistedSettings();
     ConnectSignals();
+    connect(&Theme::Instance(), &Theme::changed, this, &MainWindow::ApplyTheme);
     if (!automation_) {
         CreateTray();
         // Keep the registry in step with the persisted preference; the user
@@ -243,13 +257,58 @@ void MainWindow::BuildUi() {
     status_timer_->setInterval(4000);
 }
 
-QLabel* MainWindow::MakeIconLabel(Icon icon, int size, const QColor& color,
+QLabel* MainWindow::MakeIconLabel(Icon icon, int size, IconTone tone,
                                   QWidget* parent) {
     auto* label = new QLabel(parent);
-    label->setPixmap(IconRenderer::Pixmap(icon, size, color));
+    label->setPixmap(
+        IconRenderer::Pixmap(icon, size, Theme::Instance().ToneColor(tone)));
     label->setFixedSize(size, size);
     label->setAlignment(Qt::AlignCenter);
+    icon_labels_.push_back({label, icon, size, tone});
     return label;
+}
+
+void MainWindow::ApplyTheme() {
+    setStyleSheet(
+        Theme::Instance().Expand(QString::fromUtf8(kStyleSheetTemplate)));
+    RefreshThemedIcons();
+    if (status_label_) {
+        if (status_label_->text().isEmpty()) {
+            status_label_->setStyleSheet(QString());
+        } else {
+            const ThemeColors& c = Theme::Instance().colors();
+            status_label_->setStyleSheet(
+                QStringLiteral("color:%1; font-size:13px;")
+                    .arg((status_is_error_ ? c.danger : c.textMuted).name()));
+        }
+    }
+    ApplyWindowEffects();
+    update();
+}
+
+void MainWindow::RefreshThemedIcons() {
+    const Theme& theme = Theme::Instance();
+    for (const ThemedIconLabel& ref : icon_labels_) {
+        if (ref.label) {
+            ref.label->setPixmap(IconRenderer::Pixmap(
+                ref.icon, ref.size, theme.ToneColor(ref.tone)));
+        }
+    }
+    const QColor secondary = theme.ToneColor(IconTone::Secondary);
+    if (settings_button_) {
+        settings_button_->setIcon(
+            IconRenderer::QIconFor(Icon::Gear, 22, secondary));
+    }
+    if (open_files_button_) {
+        open_files_button_->setIcon(
+            IconRenderer::QIconFor(Icon::Folder, 22, secondary));
+    }
+    if (browse_button_) {
+        browse_button_->setIcon(
+            IconRenderer::QIconFor(Icon::Folder, 20, secondary));
+    }
+    UpdateAudioUi(true);
+    UpdateAudioUi(false);
 }
 
 QWidget* MainWindow::BuildNavRow() {
@@ -278,8 +337,8 @@ QWidget* MainWindow::BuildNavRow() {
         button->setObjectName(QStringLiteral("navAction"));
         button->setCursor(Qt::PointingHandCursor);
         button->setFocusPolicy(Qt::NoFocus);
-        button->setIcon(
-            IconRenderer::QIconFor(icon, 22, QColor(0x4E, 0x59, 0x69)));
+        button->setIcon(IconRenderer::QIconFor(
+            icon, 22, Theme::Instance().ToneColor(IconTone::Secondary)));
         button->setIconSize(QSize(22, 22));
         QFont font = button->font();
         font.setPixelSize(15);
@@ -287,7 +346,9 @@ QWidget* MainWindow::BuildNavRow() {
         return button;
     };
     settings_button_ = make_action(Icon::Gear, QStringLiteral("设置"));
-    auto* open_files = make_action(Icon::Folder, QStringLiteral("打开文件"));
+    open_files_button_ =
+        make_action(Icon::Folder, QStringLiteral("打开文件"));
+    auto* open_files = open_files_button_;
     layout->addWidget(settings_button_);
     layout->addSpacing(16);
     layout->addWidget(open_files);
@@ -315,7 +376,7 @@ QWidget* MainWindow::BuildContentCard() {
     auto* header = new QHBoxLayout;
     header->setSpacing(8);
     header->addWidget(
-        MakeIconLabel(Icon::Monitor, 20, QColor(0x1D, 0x21, 0x29), card));
+        MakeIconLabel(Icon::Monitor, 20, IconTone::Text, card));
     auto* title = new QLabel(QStringLiteral("录制内容"), card);
     title->setObjectName(QStringLiteral("cardTitle"));
     header->addWidget(title);
@@ -357,7 +418,7 @@ QWidget* MainWindow::BuildAudioCard() {
     auto* header = new QHBoxLayout;
     header->setSpacing(8);
     header->addWidget(
-        MakeIconLabel(Icon::Speaker, 20, QColor(0x1D, 0x21, 0x29), card));
+        MakeIconLabel(Icon::Speaker, 20, IconTone::Text, card));
     auto* title = new QLabel(QStringLiteral("音频设置"), card);
     title->setObjectName(QStringLiteral("cardTitle"));
     header->addWidget(title);
@@ -371,7 +432,7 @@ QWidget* MainWindow::BuildAudioCard() {
         h->setContentsMargins(0, 0, 0, 0);
         h->setSpacing(0);
         h->addWidget(MakeIconLabel(microphone ? Icon::Mic : Icon::Speaker, 20,
-                                   QColor(0x4E, 0x59, 0x69), row));
+                                   IconTone::Secondary, row));
         h->addSpacing(10);
         auto* label = new QLabel(
             microphone ? QStringLiteral("麦克风") : QStringLiteral("系统声音"),
@@ -445,7 +506,7 @@ QWidget* MainWindow::BuildVideoCard() {
     auto* header = new QHBoxLayout;
     header->setSpacing(8);
     header->addWidget(
-        MakeIconLabel(Icon::Gear, 20, QColor(0x1D, 0x21, 0x29), body));
+        MakeIconLabel(Icon::Gear, 20, IconTone::Text, body));
     auto* title = new QLabel(QStringLiteral("视频设置"), body);
     title->setObjectName(QStringLiteral("cardTitle"));
     header->addWidget(title);
@@ -455,7 +516,8 @@ QWidget* MainWindow::BuildVideoCard() {
 
     auto* row1 = new QHBoxLayout;
     row1->setSpacing(0);
-    row1->addWidget(MakeIconLabel(Icon::Hd, 20, QColor(0x4E, 0x59, 0x69), body));
+    row1->addWidget(
+        MakeIconLabel(Icon::Hd, 20, IconTone::Secondary, body));
     row1->addSpacing(8);
     auto* resolution_label = new QLabel(QStringLiteral("分辨率"), body);
     resolution_label->setObjectName(QStringLiteral("rowLabel"));
@@ -484,7 +546,8 @@ QWidget* MainWindow::BuildVideoCard() {
 
     auto* row2 = new QHBoxLayout;
     row2->setSpacing(0);
-    row2->addWidget(MakeIconLabel(Icon::Film, 20, QColor(0x4E, 0x59, 0x69), body));
+    row2->addWidget(
+        MakeIconLabel(Icon::Film, 20, IconTone::Secondary, body));
     row2->addSpacing(8);
     auto* codec_label = new QLabel(QStringLiteral("编码格式"), body);
     codec_label->setObjectName(QStringLiteral("rowLabel"));
@@ -519,10 +582,10 @@ QWidget* MainWindow::BuildBottomBar() {
     layout->setSpacing(0);
 
     layout->addWidget(
-        MakeIconLabel(Icon::Folder, 22, QColor(0x4E, 0x59, 0x69), bar));
+        MakeIconLabel(Icon::Folder, 22, IconTone::Secondary, bar));
     layout->addSpacing(10);
     auto* save_label = new QLabel(QStringLiteral("保存路径"), bar);
-    save_label->setStyleSheet(QStringLiteral("color:#4E5969; font-size:14px;"));
+    save_label->setObjectName(QStringLiteral("secondaryLabel"));
     layout->addWidget(save_label);
     layout->addSpacing(18);
 
@@ -548,7 +611,8 @@ QWidget* MainWindow::BuildBottomBar() {
     browse_button_->setFixedSize(36, 36);
     browse_button_->setIconSize(QSize(20, 20));
     browse_button_->setIcon(
-        IconRenderer::QIconFor(Icon::Folder, 20, QColor(0x4E, 0x59, 0x69)));
+        IconRenderer::QIconFor(
+            Icon::Folder, 20, Theme::Instance().ToneColor(IconTone::Secondary)));
     browse_button_->setToolTip(QStringLiteral("选择保存位置"));
     path_layout->addWidget(browse_button_);
     layout->addWidget(path_box, 2);
@@ -556,8 +620,8 @@ QWidget* MainWindow::BuildBottomBar() {
 
     auto make_divider = [&] {
         auto* divider = new QWidget(bar);
+        divider->setObjectName(QStringLiteral("vDivider"));
         divider->setFixedSize(1, 40);
-        divider->setStyleSheet(QStringLiteral("background:#E5E6EB;"));
         return divider;
     };
     // One row per stat: icon + caption + value, all vertically centered. The
@@ -568,7 +632,7 @@ QWidget* MainWindow::BuildBottomBar() {
         block_layout->setContentsMargins(0, 0, 0, 0);
         block_layout->setSpacing(0);
         block_layout->addWidget(
-            MakeIconLabel(icon, 22, QColor(0x86, 0x90, 0x9C), block),
+            MakeIconLabel(icon, 22, IconTone::Muted, block),
             0, Qt::AlignVCenter);
         block_layout->addSpacing(10);
         auto* caption_label = new QLabel(caption, block);
@@ -779,8 +843,8 @@ void MainWindow::CreateTray() {
     tray_icon_ = new QSystemTrayIcon(this);
     QIcon icon;
     for (const int size : {16, 24, 32, 64}) {
-        icon.addPixmap(IconRenderer::Pixmap(Icon::Play, size,
-                                            QColor(0x2F, 0x6B, 0xFF)));
+        icon.addPixmap(IconRenderer::Pixmap(
+            Icon::Play, size, Theme::Instance().ToneColor(IconTone::Primary)));
     }
     tray_icon_->setIcon(icon);
     tray_icon_->setToolTip(QStringLiteral("Hmmob 录屏"));
@@ -901,6 +965,7 @@ void MainWindow::ConnectSignals() {
     });
     connect(poll_timer_, &QTimer::timeout, this, &MainWindow::Tick);
     connect(status_timer_, &QTimer::timeout, this, [this] {
+        status_is_error_ = false;
         status_label_->clear();
         status_label_->setStyleSheet(QString());
     });
@@ -1004,7 +1069,8 @@ void MainWindow::UpdateAudioUi(bool microphone) {
     meter->SetActive(enabled);
     toggle->setIcon(IconRenderer::QIconFor(
         enabled ? Icon::Speaker : Icon::SpeakerMuted, 22,
-        enabled ? QColor(0x3A, 0x42, 0x54) : QColor(0xB4, 0xBA, 0xC6)));
+        Theme::Instance().ToneColor(enabled ? IconTone::Icon
+                                             : IconTone::IconDisabled)));
     toggle->setToolTip(enabled ? QStringLiteral("静音") : QStringLiteral("开启"));
 }
 
@@ -1062,10 +1128,12 @@ void MainWindow::OpenSettings() {
 }
 
 void MainWindow::ShowStatus(const QString& text, bool error, int timeout_ms) {
+    status_is_error_ = error;
     status_label_->setText(text);
+    const ThemeColors& c = Theme::Instance().colors();
     status_label_->setStyleSheet(
-        error ? QStringLiteral("color:#E5484D; font-size:13px;")
-              : QStringLiteral("color:#86909C; font-size:13px;"));
+        QStringLiteral("color:%1; font-size:13px;")
+            .arg((error ? c.danger : c.textMuted).name()));
     if (timeout_ms > 0) {
         status_timer_->start(timeout_ms);
     } else {
@@ -1653,6 +1721,22 @@ void MainWindow::CaptureSettingsScreenshots(const QString& directory) {
     SyncSettingsFromUi();
     QDir().mkpath(directory);
     auto* dialog = new SettingsDialog(settings_, this);
+    // Verification hook: render at a specific size, e.g. the minimum
+    // 900x560, so DPI/resize regressions can be inspected in CI.
+    const QString requested_size =
+        QString::fromLocal8Bit(qgetenv("HMMOB_SETTINGS_SCREENSHOT_SIZE"));
+    if (!requested_size.isEmpty()) {
+        const QStringList parts = requested_size.split(QLatin1Char('x'));
+        if (parts.size() == 2) {
+            bool width_ok = false;
+            bool height_ok = false;
+            const int width = parts.at(0).toInt(&width_ok);
+            const int height = parts.at(1).toInt(&height_ok);
+            if (width_ok && height_ok && width > 0 && height > 0) {
+                dialog->resize(width, height);
+            }
+        }
+    }
     dialog->setModal(false);
     dialog->show();
     QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
@@ -1669,7 +1753,7 @@ void MainWindow::CaptureSettingsScreenshots(const QString& directory) {
         const QString path = QDir(directory).filePath(
             QStringLiteral("settings-%1-%2.png").arg(i + 1).arg(names.at(i)));
         QImage image(dialog->size(), QImage::Format_ARGB32_Premultiplied);
-        image.fill(Qt::white);
+        image.fill(Theme::Instance().colors().window);
         dialog->render(&image);
         if (!image.save(path)) {
             // This Qt build ships no PNG image plugin; BMP is built in, so
@@ -1890,7 +1974,8 @@ void MainWindow::ApplyWindowEffects() {
     const int preference = maximized_ ? DWMWCP_DONOTROUND : DWMWCP_ROUND;
     DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &preference,
                           sizeof(preference));
-    const BOOL dark = FALSE;
+    const BOOL dark =
+        Theme::Instance().effectiveMode() == ThemeMode::Dark ? TRUE : FALSE;
     DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark,
                           sizeof(dark));
 #endif

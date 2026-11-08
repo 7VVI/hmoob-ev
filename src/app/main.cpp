@@ -6,6 +6,7 @@
 #include <cstdio>
 
 #include "app/MainWindow.h"
+#include "app/Theme.h"
 #include "app/UiFont.h"
 
 namespace {
@@ -61,6 +62,10 @@ int main(int argc, char** argv) {
     QApplication::setApplicationVersion(QStringLiteral("0.1.0"));
 
     app.setFont(UiFont(14));
+
+    // Reads the saved mode, sets the application palette and starts following
+    // the OS when the user chose 跟随系统.
+    Theme::Instance();
 
     // Automated smoke mode:
     //   --smoke <seconds> <output path> [--smoke-mode ...] ...

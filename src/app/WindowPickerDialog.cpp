@@ -12,13 +12,44 @@
 #include <QMessageBox>
 #include <QPixmap>
 #include <QPushButton>
+#include <QShowEvent>
 #include <QString>
 #include <QVBoxLayout>
 
 #include <string>
 #include <vector>
 
+#include "app/Theme.h"
+
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+
 namespace {
+
+QString PickerStyle() {
+    return Theme::Instance().Expand(QString::fromUtf8(R"(
+QDialog { background: {card}; }
+QLabel#dialogTitle { font-size: 17px; font-weight: 600; color: {text}; }
+QLabel#dialogHint { font-size: 13px; color: {textMuted}; }
+QListWidget { background: {inputBg}; border: 1px solid {inputBorder}; border-radius: 10px; padding: 4px; outline: 0; font-size: 14px; color: {text}; }
+QListWidget::item { padding: 6px; border-radius: 8px; color: {text}; }
+QListWidget::item:hover { background: {hoverBg}; }
+QListWidget::item:selected { background: {selectionBg}; color: {selectionText}; }
+QPushButton { min-height: 36px; padding: 0 22px; border-radius: 8px; font-size: 14px; }
+QPushButton#secondary { background: {inputBg}; border: 1px solid {inputBorder}; color: {textSecondary}; }
+QPushButton#secondary:hover { background: {hoverBg}; }
+QPushButton#primary { background: {primary}; border: 1px solid {primary}; color: #FFFFFF; }
+QPushButton#primary:hover { background: {primaryHover}; }
+QPushButton#primary:pressed { background: {primaryPressed}; }
+QScrollBar:vertical { background: transparent; width: 8px; margin: 0px; }
+QScrollBar::handle:vertical { background: {scrollHandle}; border-radius: 4px; min-height: 28px; }
+QScrollBar::handle:vertical:hover { background: {scrollHandleHover}; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; background: transparent; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+QToolTip { background: {menuBg}; color: {text}; border: 1px solid {menuBorder}; padding: 4px 8px; }
+)"));
+}
 
 bool IsCloaked(HWND window) {
     BOOL cloaked = FALSE;
@@ -174,25 +205,11 @@ WindowPickerDialog::WindowPickerDialog(QWidget* parent,
     setMinimumSize(440, 340);
     resize(580, 480);
 
-    setStyleSheet(QStringLiteral(
-        "QDialog { background: #FFFFFF; }"
-        "QLabel#dialogTitle { font-size: 17px; font-weight: 600; "
-        "color: #1D2129; }"
-        "QLabel#dialogHint { font-size: 13px; color: #86909C; }"
-        "QListWidget { background: #FFFFFF; border: 1px solid #E5E6EB; "
-        "border-radius: 10px; padding: 4px; outline: 0; font-size: 14px; }"
-        "QListWidget::item { padding: 6px; border-radius: 8px; "
-        "color: #1D2129; }"
-        "QListWidget::item:hover { background: #F4F7FD; }"
-        "QListWidget::item:selected { background: #EAF2FE; color: #2F6BFF; }"
-        "QPushButton { min-height: 36px; padding: 0 22px; border-radius: 8px; "
-        "font-size: 14px; }"
-        "QPushButton#secondary { background: #FFFFFF; border: 1px solid "
-        "#E5E6EB; color: #4E5969; }"
-        "QPushButton#secondary:hover { background: #F7F8FA; }"
-        "QPushButton#primary { background: #2F6BFF; border: 1px solid #2F6BFF; "
-        "color: #FFFFFF; }"
-        "QPushButton#primary:hover { background: #245BF0; }"));
+    setStyleSheet(PickerStyle());
+    connect(&Theme::Instance(), &Theme::changed, this, [this] {
+        setStyleSheet(PickerStyle());
+        update();
+    });
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(20, 20, 20, 16);
@@ -271,6 +288,17 @@ HWND WindowPickerDialog::SelectedWindow() const {
     }
     return reinterpret_cast<HWND>(
         item->data(Qt::UserRole).value<quintptr>());
+}
+
+void WindowPickerDialog::showEvent(QShowEvent* event) {
+    QDialog::showEvent(event);
+    const HWND hwnd = reinterpret_cast<HWND>(winId());
+    if (hwnd) {
+        const BOOL dark =
+            Theme::Instance().effectiveMode() == ThemeMode::Dark ? TRUE : FALSE;
+        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark,
+                              sizeof(dark));
+    }
 }
 
 bool WindowPickerDialog::Pick(QWidget* parent, HWND& out) {

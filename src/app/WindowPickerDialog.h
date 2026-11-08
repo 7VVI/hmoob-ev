@@ -22,6 +22,7 @@ public:
 
 protected:
     void accept() override;
+    void showEvent(QShowEvent* event) override;
 
 private:
     WindowPickerDialog(QWidget* parent, const std::vector<HWND>& windows);

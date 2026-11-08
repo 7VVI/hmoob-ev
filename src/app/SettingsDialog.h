@@ -4,6 +4,7 @@
 #include <QVector>
 
 #include "app/AppSettings.h"
+#include "app/Theme.h"
 
 class QAbstractButton;
 class QButtonGroup;
@@ -33,8 +34,13 @@ public:
     // Switches the visible page; used by the screenshot automation hook.
     void SelectPage(int page);
 
+public slots:
+    // Rebuilds the stylesheet and painted icons after Theme::changed.
+    void ApplyTheme();
+
 protected:
     void showEvent(QShowEvent* event) override;
+    void reject() override;
 
 private:
     QWidget* BuildHeader();
@@ -47,11 +53,14 @@ private:
     QWidget* BuildFooter();
     void UpdateCompatibility();
     void SetThemeMode(int mode, bool announce);
+    void UpdateSegmentIcons();
     void ResetToDefaults();
     void BrowseOutputDirectory();
     AppSettings Collect() const;
 
     AppSettings base_;
+    // Mode when the dialog opened; 取消 restores it.
+    ThemeMode initial_theme_ = ThemeMode::Light;
 
     QStackedWidget* stack_ = nullptr;
     QVector<QAbstractButton*> nav_buttons_;
@@ -66,9 +75,9 @@ private:
     QPushButton* light_button_ = nullptr;
     QPushButton* dark_button_ = nullptr;
     QPushButton* system_button_ = nullptr;
-    QLabel* theme_hint_ = nullptr;
-    QTimer* theme_hint_timer_ = nullptr;
     QComboBox* language_combo_ = nullptr;
+    QLabel* header_mark_ = nullptr;
+    QLabel* about_mark_ = nullptr;
 
     // 录制设置
     QComboBox* container_combo_ = nullptr;

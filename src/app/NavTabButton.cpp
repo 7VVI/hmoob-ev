@@ -4,6 +4,8 @@
 #include <QPainter>
 #include <QPaintEvent>
 
+#include "app/Theme.h"
+
 namespace {
 constexpr int kHeight = 56;
 constexpr int kSidePadding = 22;
@@ -19,6 +21,8 @@ NavTabButton::NavTabButton(Icon icon, const QString& text, QWidget* parent)
     setFocusPolicy(Qt::NoFocus);
     setFixedHeight(kHeight);
     setAttribute(Qt::WA_Hover, true);
+    connect(&Theme::Instance(), &Theme::changed, this,
+            [this] { update(); });
 }
 
 QSize NavTabButton::sizeHint() const {
@@ -53,19 +57,20 @@ void NavTabButton::paintEvent(QPaintEvent* event) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
 
+    const ThemeColors& colors = Theme::Instance().colors();
     const QRectF bounds = rect();
     if (active_) {
         painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(0xEA, 0xF2, 0xFE));
+        painter.setBrush(colors.navActiveBg);
         painter.drawRoundedRect(bounds, 10.0, 10.0);
     } else if (hover_) {
         painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(0xF0, 0xF4, 0xFB));
+        painter.setBrush(colors.navHoverBg);
         painter.drawRoundedRect(bounds, 10.0, 10.0);
     }
 
-    const QColor color = active_ ? QColor(0x2F, 0x6B, 0xFF)
-                                 : QColor(0x4E, 0x59, 0x69);
+    const QColor color =
+        active_ ? colors.primary : colors.textSecondary;
     const QRectF icon_rect(kSidePadding, (height() - kIconSize) / 2.0,
                            kIconSize, kIconSize);
     IconRenderer::Paint(painter, icon_, icon_rect, color);
@@ -84,7 +89,7 @@ void NavTabButton::paintEvent(QPaintEvent* event) {
         const qreal underline_width =
             qMax<qreal>(0.0, width() - kUnderlineInset * 2.0);
         painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(0x2F, 0x6B, 0xFF));
+        painter.setBrush(colors.primary);
         painter.drawRoundedRect(
             QRectF((width() - underline_width) / 2.0,
                    height() - kUnderlineHeight, underline_width,

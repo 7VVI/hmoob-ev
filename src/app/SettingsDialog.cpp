@@ -16,10 +16,11 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QShowEvent>
 #include <QSignalBlocker>
 #include <QStackedWidget>
-#include <QTimer>
 #include <QVBoxLayout>
 #include <QWindow>
 
@@ -42,56 +43,80 @@
 #ifndef DWMWCP_ROUND
 #define DWMWCP_ROUND 2
 #endif
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
 
 namespace {
 
 constexpr int kDialogWidth = 980;
 constexpr int kDialogHeight = 640;
+constexpr int kDialogMinWidth = 900;
+constexpr int kDialogMinHeight = 560;
 constexpr int kNavWidth = 200;
 constexpr int kLabelWidth = 88;
 
-const QColor kPrimary(0x2F, 0x6B, 0xFF);
-const QColor kText(0x1D, 0x21, 0x29);
-const QColor kSecondary(0x4E, 0x59, 0x69);
-const QColor kMuted(0x86, 0x90, 0x9C);
+// Three equal segments: 118 px each with 8 px gaps.
+constexpr int kSegmentWidth = 118;
+constexpr int kSegmentGap = 8;
+constexpr int kSegmentRowWidth = kSegmentWidth * 3 + kSegmentGap * 2;
 
-const char* const kSettingsStyle = R"(
-QDialog { background: #FFFFFF; }
-QWidget#settingsHeader { background: #FFFFFF; }
-QWidget#settingsNavPane { background: #FFFFFF; }
-QWidget#settingsContent { background: #FFFFFF; }
-QWidget#settingsFooter { background: #FFFFFF; }
-QLabel#pageTitle { font-size: 20px; font-weight: 600; color: #1D2129; }
-QLabel#sectionTitle { font-size: 13px; font-weight: 600; color: #86909C; }
-QLabel#fieldLabel { font-size: 14px; color: #1D2129; }
-QLabel#fieldHint { font-size: 12px; color: #86909C; }
-QLabel#fieldError { font-size: 12px; color: #E5484D; }
-QLabel#themeHint { font-size: 12px; color: #86909C; }
-QLabel#noteLabel { font-size: 12px; color: #86909C; }
-QLabel#deferredLabel { font-size: 13px; color: #A9AEB8; }
-QLabel#keyChip { background: #F7F8FA; border: 1px solid #EDF0F5; border-radius: 6px; padding: 3px 10px; font-size: 13px; color: #4E5969; }
-QLabel#aboutText { font-size: 13px; color: #4E5969; }
-QLabel#aboutVersion { font-size: 13px; color: #86909C; }
-QFrame#rowSeparator { background: #F2F3F5; border: none; }
-QComboBox { background: #FFFFFF; border: 1px solid #E5E6EB; border-radius: 10px; padding: 0 10px 0 14px; font-size: 14px; color: #1D2129; }
-QComboBox:hover { border-color: #C9CDD4; }
-QComboBox:disabled { background: #F7F8FA; color: #A9AEB8; border-color: #EDF0F5; }
+const char* const kSettingsStyleTemplate = R"(
+QDialog { background: {card}; }
+QWidget#settingsHeader { background: {card}; }
+QWidget#settingsNavPane { background: {card}; }
+QWidget#settingsContent { background: {card}; }
+QWidget#settingsFooter { background: {card}; }
+QLabel#pageTitle { font-size: 20px; font-weight: 600; color: {text}; }
+QLabel#sectionTitle { font-size: 13px; font-weight: 600; color: {textMuted}; }
+QLabel#fieldLabel { font-size: 14px; color: {text}; }
+QLabel#fieldHint { font-size: 12px; color: {textMuted}; }
+QLabel#fieldError { font-size: 12px; color: {danger}; }
+QLabel#noteLabel { font-size: 12px; color: {textMuted}; }
+QLabel#deferredLabel { font-size: 13px; color: {disabledText}; }
+QLabel#appTitle, QLabel#aboutName { color: {text}; }
+QLabel#keyChip { background: {keyChipBg}; border: 1px solid {keyChipBorder}; border-radius: 6px; padding: 3px 10px; font-size: 13px; color: {textSecondary}; }
+QLabel#aboutText { font-size: 13px; color: {textSecondary}; }
+QLabel#aboutVersion { font-size: 13px; color: {textMuted}; }
+QFrame#rowSeparator { background: {separator}; border: none; }
+QComboBox { background: {inputBg}; border: 1px solid {inputBorder}; border-radius: 10px; padding: 0 10px 0 14px; font-size: 14px; color: {text}; }
+QComboBox:hover { border-color: {iconMuted}; }
+QComboBox:disabled { background: {disabledBg}; color: {disabledText}; border-color: {disabledBorder}; }
 QComboBox::drop-down { border: none; background: transparent; width: 34px; }
 QComboBox::down-arrow { image: none; width: 0px; height: 0px; }
-QComboBox QAbstractItemView { background: #FFFFFF; border: 1px solid #E5E6EB; border-radius: 8px; padding: 4px; outline: 0; selection-background-color: #EAF2FE; selection-color: #2F6BFF; }
+QComboBox QAbstractItemView { background: {menuBg}; border: 1px solid {menuBorder}; border-radius: 8px; padding: 4px; outline: 0; color: {text}; selection-background-color: {selectionBg}; selection-color: {selectionText}; }
 QComboBox QAbstractItemView::item { min-height: 30px; padding: 0 10px; }
-QLineEdit { background: #FFFFFF; border: 1px solid #E5E6EB; border-radius: 10px; padding: 0 12px; font-size: 14px; color: #1D2129; selection-background-color: #2F6BFF; selection-color: #FFFFFF; }
-QLineEdit:hover { border-color: #C9CDD4; }
+QComboBox QAbstractItemView::item:hover { background: {hoverBg}; }
+QLineEdit { background: {inputBg}; border: 1px solid {inputBorder}; border-radius: 10px; padding: 0 12px; font-size: 14px; color: {text}; selection-background-color: {primary}; selection-color: #FFFFFF; }
+QLineEdit:hover { border-color: {iconMuted}; }
+QLineEdit:disabled { background: {disabledBg}; color: {disabledText}; border-color: {disabledBorder}; }
 QPushButton { min-height: 38px; padding: 0 20px; border-radius: 10px; font-size: 14px; }
-QPushButton#outline { background: #FFFFFF; border: 1px solid #E5E6EB; color: #4E5969; }
-QPushButton#outline:hover { background: #F7F8FA; }
-QPushButton#saveButton { background: #2F6BFF; border: 1px solid #2F6BFF; color: #FFFFFF; }
-QPushButton#saveButton:hover { background: #245BF0; }
-QPushButton#saveButton:pressed { background: #1E52E8; }
-QPushButton#saveButton:disabled { background: #B7C7F5; border-color: #B7C7F5; color: #FFFFFF; }
-QPushButton#segment { background: #FFFFFF; border: 1px solid #E5E6EB; border-radius: 10px; color: #4E5969; font-size: 14px; padding: 0 12px; }
-QPushButton#segment:hover { border-color: #C9CDD4; }
-QPushButton#segment:checked { background: #EEF5FF; border: 1px solid #2F6BFF; color: #2F6BFF; }
+QPushButton#outline { background: {inputBg}; border: 1px solid {inputBorder}; color: {textSecondary}; }
+QPushButton#outline:hover { background: {hoverBg}; }
+QPushButton#outline:disabled { color: {disabledText}; border-color: {disabledBorder}; }
+QPushButton#saveButton { background: {primary}; border: 1px solid {primary}; color: #FFFFFF; }
+QPushButton#saveButton:hover { background: {primaryHover}; }
+QPushButton#saveButton:pressed { background: {primaryPressed}; }
+QPushButton#saveButton:disabled { background: {primaryDisabled}; border-color: {primaryDisabled}; color: {primaryDisabledText}; }
+QPushButton#segment { background: {card}; border: 1px solid {inputBorder}; border-radius: 10px; color: {textSecondary}; font-size: 14px; padding: 0 10px; text-align: center; }
+QPushButton#segment:hover { border-color: {iconMuted}; }
+QPushButton#segment:checked { background: {primarySoft}; border: 1px solid {primary}; color: {primary}; }
+QPushButton#segment:disabled { color: {disabledText}; }
+QScrollArea#settingsScroll { background: transparent; border: none; }
+QScrollArea#settingsScroll > QWidget > QWidget { background: transparent; }
+QScrollBar:vertical { background: transparent; width: 8px; margin: 0px; }
+QScrollBar::handle:vertical { background: {scrollHandle}; border-radius: 4px; min-height: 28px; }
+QScrollBar::handle:vertical:hover { background: {scrollHandleHover}; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; background: transparent; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+QToolTip { background: {menuBg}; color: {text}; border: 1px solid {menuBorder}; padding: 4px 8px; }
+QMenu { background: {menuBg}; border: 1px solid {menuBorder}; border-radius: 8px; padding: 4px; color: {text}; }
+QMenu::item { padding: 6px 24px 6px 14px; border-radius: 6px; }
+QMenu::item:selected { background: {selectionBg}; color: {selectionText}; }
+QMenu::item:disabled { color: {disabledText}; }
+QMenu::separator { height: 1px; background: {divider}; margin: 4px 8px; }
+QMessageBox { background: {card}; }
+QMessageBox QLabel { color: {text}; }
 )";
 
 // Left navigation row: 44 px tall, rounded highlight when active.
@@ -105,6 +130,8 @@ public:
         setAttribute(Qt::WA_Hover, true);
         setFixedHeight(44);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        connect(&Theme::Instance(), &Theme::changed, this,
+                [this] { update(); });
     }
 
     QSize sizeHint() const override {
@@ -128,18 +155,20 @@ protected:
         (void)event;
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing, true);
+        const ThemeColors& colors = Theme::Instance().colors();
         const QRectF bounds = rect();
         if (isChecked()) {
             painter.setPen(Qt::NoPen);
-            painter.setBrush(QColor(0xEE, 0xF4, 0xFF));
+            painter.setBrush(colors.navActiveBg);
             painter.drawRoundedRect(bounds, 10.0, 10.0);
         } else if (hover_) {
             painter.setPen(Qt::NoPen);
-            painter.setBrush(QColor(0xF5, 0xF7, 0xFA));
+            painter.setBrush(colors.hoverBg);
             painter.drawRoundedRect(bounds, 10.0, 10.0);
         }
 
-        const QColor color = isChecked() ? kPrimary : kSecondary;
+        const QColor color =
+            isChecked() ? colors.primary : colors.textSecondary;
         IconRenderer::Paint(painter, icon_,
                             QRectF(16.0, (height() - 20.0) / 2.0, 20, 20),
                             color, 1.7);
@@ -189,6 +218,8 @@ public:
         setFixedSize(46, 56);
         setAttribute(Qt::WA_Hover, true);
         setToolTip(QStringLiteral("关闭"));
+        connect(&Theme::Instance(), &Theme::changed, this,
+                [this] { update(); });
     }
 
 protected:
@@ -208,13 +239,14 @@ protected:
         (void)event;
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing, true);
+        const ThemeColors& colors = Theme::Instance().colors();
         if (hover_) {
-            painter.fillRect(rect(), QColor(0xE8, 0x11, 0x23));
+            painter.fillRect(rect(), colors.dangerStrong);
         }
         IconRenderer::Paint(
             painter, Icon::Close,
             QRectF((width() - 16.0) / 2.0, (height() - 16.0) / 2.0, 16, 16),
-            hover_ ? QColor(Qt::white) : QColor(0x3A, 0x42, 0x54), 1.5);
+            hover_ ? QColor(Qt::white) : colors.icon, 1.5);
     }
 
 private:
@@ -287,12 +319,14 @@ QPushButton* MakeSegment(Icon icon, const QString& text, QWidget* parent) {
     button->setCheckable(true);
     button->setCursor(Qt::PointingHandCursor);
     button->setFocusPolicy(Qt::NoFocus);
-    button->setFixedSize(118, 38);
+    button->setMinimumSize(kSegmentWidth, 38);
+    button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    const ThemeColors& colors = Theme::Instance().colors();
     QIcon qicon;
-    qicon.addPixmap(IconRenderer::Pixmap(icon, 18, kSecondary), QIcon::Normal,
-                    QIcon::Off);
-    qicon.addPixmap(IconRenderer::Pixmap(icon, 18, kPrimary), QIcon::Normal,
-                    QIcon::On);
+    qicon.addPixmap(IconRenderer::Pixmap(icon, 18, colors.textSecondary),
+                    QIcon::Normal, QIcon::Off);
+    qicon.addPixmap(IconRenderer::Pixmap(icon, 18, colors.primary),
+                    QIcon::Normal, QIcon::On);
     button->setIcon(qicon);
     button->setIconSize(QSize(18, 18));
     return button;
@@ -308,9 +342,11 @@ SettingsDialog::SettingsDialog(const AppSettings& settings, QWidget* parent)
     setModal(true);
     setFont(UiFont(14));
     setAttribute(Qt::WA_StyledBackground, true);
-    setStyleSheet(QString::fromUtf8(kSettingsStyle));
+    setStyleSheet(Theme::Instance().Expand(
+        QString::fromUtf8(kSettingsStyleTemplate)));
     setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint);
-    setFixedSize(kDialogWidth, kDialogHeight);
+    setMinimumSize(kDialogMinWidth, kDialogMinHeight);
+    resize(kDialogWidth, kDialogHeight);
 
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
@@ -330,13 +366,24 @@ SettingsDialog::SettingsDialog(const AppSettings& settings, QWidget* parent)
     content_layout->setContentsMargins(32, 18, 32, 0);
     content_layout->setSpacing(0);
 
-    stack_ = new QStackedWidget(content);
+    // The pages are taller than the minimum dialog height on some DPI/font
+    // combinations; the scroll area keeps every control reachable.
+    auto* scroll = new QScrollArea(content);
+    scroll->setObjectName(QStringLiteral("settingsScroll"));
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scroll->viewport()->setAutoFillBackground(false);
+
+    stack_ = new QStackedWidget(scroll);
     stack_->addWidget(BuildGeneralPage());
     stack_->addWidget(BuildRecordingPage());
     stack_->addWidget(BuildShortcutsPage());
     stack_->addWidget(BuildOutputPage());
     stack_->addWidget(BuildAboutPage());
-    content_layout->addWidget(stack_, 1);
+    scroll->setWidget(stack_);
+    content_layout->addWidget(scroll, 1);
     content_layout->addWidget(BuildFooter(), 0);
 
     body_layout->addWidget(content, 1);
@@ -348,6 +395,11 @@ SettingsDialog::SettingsDialog(const AppSettings& settings, QWidget* parent)
     }
     nav_buttons_.front()->setChecked(true);
     stack_->setCurrentIndex(0);
+
+    initial_theme_ = Theme::Instance().mode();
+    SetThemeMode(static_cast<int>(initial_theme_), false);
+    connect(&Theme::Instance(), &Theme::changed, this,
+            &SettingsDialog::ApplyTheme);
 
     connect(container_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) { UpdateCompatibility(); });
@@ -363,15 +415,16 @@ QWidget* SettingsDialog::BuildHeader() {
     layout->setContentsMargins(28, 0, 0, 0);
     layout->setSpacing(0);
 
-    auto* mark = new QLabel(header);
-    mark->setPixmap(IconRenderer::Pixmap(Icon::Play, 26, kPrimary));
-    mark->setFixedSize(26, 26);
-    layout->addWidget(mark, 0, Qt::AlignVCenter);
+    header_mark_ = new QLabel(header);
+    header_mark_->setPixmap(IconRenderer::Pixmap(
+        Icon::Play, 26, Theme::Instance().colors().primary));
+    header_mark_->setFixedSize(26, 26);
+    layout->addWidget(header_mark_, 0, Qt::AlignVCenter);
     layout->addSpacing(12);
 
     auto* title = new QLabel(QStringLiteral("Hmmob 录屏"), header);
+    title->setObjectName(QStringLiteral("appTitle"));
     title->setFont(UiFont(16, QFont::DemiBold));
-    title->setStyleSheet(QStringLiteral("color:#1D2129;"));
     layout->addWidget(title, 0, Qt::AlignVCenter);
     layout->addStretch(1);
 
@@ -444,10 +497,15 @@ QWidget* SettingsDialog::BuildGeneralPage() {
     layout->addWidget(MakeSectionTitle(QStringLiteral("界面设置"), page));
     layout->addSpacing(8);
 
+    // A fixed-width row with three equal segments. The width is smaller than
+    // the narrowest content column (900 px dialog at any DPI), so the third
+    // segment and its border always stay inside the page.
     auto* theme_control = new QWidget(page);
+    theme_control->setFixedWidth(kSegmentRowWidth);
+    theme_control->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     auto* theme_layout = new QHBoxLayout(theme_control);
     theme_layout->setContentsMargins(0, 0, 0, 0);
-    theme_layout->setSpacing(8);
+    theme_layout->setSpacing(kSegmentGap);
     theme_group_ = new QButtonGroup(this);
     theme_group_->setExclusive(true);
     light_button_ = MakeSegment(Icon::Sun, QStringLiteral("浅色"), theme_control);
@@ -458,31 +516,24 @@ QWidget* SettingsDialog::BuildGeneralPage() {
     theme_group_->addButton(light_button_, 0);
     theme_group_->addButton(dark_button_, 1);
     theme_group_->addButton(system_button_, 2);
-    theme_layout->addWidget(light_button_);
-    theme_layout->addWidget(dark_button_);
-    theme_layout->addWidget(system_button_);
-    theme_layout->addStretch(1);
+    theme_layout->addWidget(light_button_, 1);
+    theme_layout->addWidget(dark_button_, 1);
+    theme_layout->addWidget(system_button_, 1);
     layout->addWidget(
         MakeLabeledRow(QStringLiteral("主题模式"), theme_control, page));
     connect(theme_group_, &QButtonGroup::idClicked, this, [this](int id) {
         SetThemeMode(id, true);
     });
-
-    theme_hint_ = new QLabel(page);
-    theme_hint_->setObjectName(QStringLiteral("themeHint"));
-    theme_hint_->setContentsMargins(kLabelWidth + 16, 0, 0, 0);
-    theme_hint_->setFixedHeight(18);
-    layout->addWidget(theme_hint_);
-    theme_hint_timer_ = new QTimer(this);
-    theme_hint_timer_->setSingleShot(true);
-    theme_hint_timer_->setInterval(4000);
-    connect(theme_hint_timer_, &QTimer::timeout, this,
-            [this] { theme_hint_->clear(); });
-    layout->addSpacing(6);
+    layout->addSpacing(10);
 
     language_combo_ = MakeCombo(page, 220);
     language_combo_->setObjectName(QStringLiteral("languageCombo"));
-    language_combo_->addItem(QStringLiteral("简体中文"));
+    language_combo_->addItem(QStringLiteral("简体中文"),
+                             QStringLiteral("zh-CN"));
+    {
+        const int index = language_combo_->findData(base_.language);
+        language_combo_->setCurrentIndex(index >= 0 ? index : 0);
+    }
     layout->addWidget(
         MakeLabeledRow(QStringLiteral("语言设置"), language_combo_, page));
     layout->addSpacing(20);
@@ -747,15 +798,16 @@ QWidget* SettingsDialog::BuildAboutPage() {
     layout->addWidget(MakePageTitle(QStringLiteral("关于我们"), page));
     layout->addSpacing(24);
 
-    auto* mark = new QLabel(page);
-    mark->setPixmap(IconRenderer::Pixmap(Icon::Play, 48, kPrimary));
-    mark->setFixedSize(48, 48);
-    layout->addWidget(mark);
+    about_mark_ = new QLabel(page);
+    about_mark_->setPixmap(IconRenderer::Pixmap(
+        Icon::Play, 48, Theme::Instance().colors().primary));
+    about_mark_->setFixedSize(48, 48);
+    layout->addWidget(about_mark_);
     layout->addSpacing(12);
 
     auto* name = new QLabel(QStringLiteral("Hmmob 录屏"), page);
+    name->setObjectName(QStringLiteral("aboutName"));
     name->setFont(UiFont(20, QFont::DemiBold));
-    name->setStyleSheet(QStringLiteral("color:#1D2129;"));
     layout->addWidget(name);
     layout->addSpacing(4);
 
@@ -856,21 +908,68 @@ void SettingsDialog::UpdateCompatibility() {
 }
 
 void SettingsDialog::SetThemeMode(int mode, bool announce) {
-    // Only the light theme exists in this build. Selecting another option
-    // explains that and snaps the selection back.
+    (void)announce;
+    if (mode < 0 || mode > 2) {
+        mode = 0;
+    }
     {
         const QSignalBlocker blocker(theme_group_);
-        light_button_->setChecked(true);
-        dark_button_->setChecked(false);
-        system_button_->setChecked(false);
+        light_button_->setChecked(mode == 0);
+        dark_button_->setChecked(mode == 1);
+        system_button_->setChecked(mode == 2);
     }
-    if (announce && mode != 0) {
-        theme_hint_->setText(QStringLiteral("深色主题将在后续版本提供"));
-        theme_hint_timer_->start();
-    } else {
-        theme_hint_timer_->stop();
-        theme_hint_->clear();
+    // Live preview; Theme persists the choice. 取消 restores initial_theme_.
+    Theme::Instance().SetMode(static_cast<ThemeMode>(mode));
+}
+
+void SettingsDialog::ApplyTheme() {
+    const ThemeColors& colors = Theme::Instance().colors();
+    setStyleSheet(Theme::Instance().Expand(
+        QString::fromUtf8(kSettingsStyleTemplate)));
+    UpdateSegmentIcons();
+    if (header_mark_) {
+        header_mark_->setPixmap(
+            IconRenderer::Pixmap(Icon::Play, 26, colors.primary));
     }
+    if (about_mark_) {
+        about_mark_->setPixmap(
+            IconRenderer::Pixmap(Icon::Play, 48, colors.primary));
+    }
+#ifdef Q_OS_WIN
+    if (windowHandle()) {
+        const HWND hwnd = reinterpret_cast<HWND>(winId());
+        const BOOL dark =
+            Theme::Instance().effectiveMode() == ThemeMode::Dark ? TRUE : FALSE;
+        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark,
+                              sizeof(dark));
+    }
+#endif
+    update();
+}
+
+void SettingsDialog::UpdateSegmentIcons() {
+    const ThemeColors& colors = Theme::Instance().colors();
+    auto update = [&colors](QPushButton* button, Icon icon) {
+        if (!button) {
+            return;
+        }
+        QIcon qicon;
+        qicon.addPixmap(IconRenderer::Pixmap(icon, 18, colors.textSecondary),
+                        QIcon::Normal, QIcon::Off);
+        qicon.addPixmap(IconRenderer::Pixmap(icon, 18, colors.primary),
+                        QIcon::Normal, QIcon::On);
+        button->setIcon(qicon);
+    };
+    update(light_button_, Icon::Sun);
+    update(dark_button_, Icon::Moon);
+    update(system_button_, Icon::Monitor);
+}
+
+void SettingsDialog::reject() {
+    // The dialog previews the theme as soon as a segment is clicked; closing
+    // without 保存设置 must put the saved mode back.
+    Theme::Instance().SetMode(initial_theme_);
+    QDialog::reject();
 }
 
 void SettingsDialog::ResetToDefaults() {
@@ -884,7 +983,9 @@ void SettingsDialog::ResetToDefaults() {
     show_complete_check_->setChecked(
         defaults.show_recording_complete_notification);
     SetThemeMode(0, false);
-    language_combo_->setCurrentIndex(0);
+    if (language_combo_) {
+        language_combo_->setCurrentIndex(0);
+    }
 
     {
         const QSignalBlocker container_blocker(container_combo_);
@@ -944,6 +1045,9 @@ AppSettings SettingsDialog::Collect() const {
         hide_notifications_check_->isChecked();
     result.show_recording_complete_notification =
         show_complete_check_->isChecked();
+    if (language_combo_) {
+        result.language = language_combo_->currentData().toString();
+    }
     return result;
 }
 
@@ -967,6 +1071,10 @@ void SettingsDialog::showEvent(QShowEvent* event) {
         const int preference = DWMWCP_ROUND;
         DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
                               &preference, sizeof(preference));
+        const BOOL dark =
+            Theme::Instance().effectiveMode() == ThemeMode::Dark ? TRUE : FALSE;
+        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark,
+                              sizeof(dark));
     }
 #endif
 }

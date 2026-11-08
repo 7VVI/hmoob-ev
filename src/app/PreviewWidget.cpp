@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "app/IconRenderer.h"
+#include "app/Theme.h"
 
 namespace {
 constexpr qreal kRadius = 14.0;
@@ -22,6 +23,8 @@ PreviewWidget::PreviewWidget(QWidget* parent) : QWidget(parent) {
     setMinimumSize(420, 300);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     setAutoFillBackground(false);
+    connect(&Theme::Instance(), &Theme::changed, this,
+            [this] { update(); });
 }
 
 void PreviewWidget::SetFrame(std::shared_ptr<const hmmob::PreviewFrame> frame) {
@@ -77,7 +80,8 @@ void PreviewWidget::paintEvent(QPaintEvent* event) {
     clip.addRoundedRect(card, kRadius, kRadius);
     painter.setClipPath(clip);
 
-    painter.fillRect(rect(), QColor(0xEE, 0xF2, 0xF8));
+    const ThemeColors& colors = Theme::Instance().colors();
+    painter.fillRect(rect(), colors.previewBg);
 
     if (!image_.isNull()) {
         // Cover the card so the rounded preview is filled edge to edge, as in
@@ -90,7 +94,7 @@ void PreviewWidget::paintEvent(QPaintEvent* event) {
         painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
         painter.drawImage(target, image_);
     } else {
-        painter.setPen(QColor(0x9A, 0xA3, 0xB2));
+        painter.setPen(colors.placeholder);
         QFont idle_font = font();
         idle_font.setPixelSize(15);
         painter.setFont(idle_font);
@@ -133,7 +137,9 @@ void PreviewWidget::paintEvent(QPaintEvent* event) {
         const QRectF error_badge(width() - kBadgeMargin - error_width,
                                  kBadgeMargin, error_width, 36);
         painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(0xE5, 0x48, 0x4D, 245));
+        QColor error_fill = colors.errorBadgeBg;
+        error_fill.setAlpha(245);
+        painter.setBrush(error_fill);
         painter.drawRoundedRect(error_badge, 8.0, 8.0);
         painter.setPen(QColor(Qt::white));
         painter.drawText(error_badge, Qt::AlignCenter, error_badge_);
@@ -141,6 +147,6 @@ void PreviewWidget::paintEvent(QPaintEvent* event) {
 
     painter.setClipping(false);
     painter.setBrush(Qt::NoBrush);
-    painter.setPen(QPen(QColor(0xE7, 0xEB, 0xF2), 1.0));
+    painter.setPen(QPen(colors.previewBorder, 1.0));
     painter.drawRoundedRect(card, kRadius, kRadius);
 }

@@ -15,6 +15,7 @@ public:
     explicit TitleBar(QWidget* parent = nullptr);
 
     void SetMaximized(bool maximized);
+    void ApplyTheme();
 
 signals:
     void MinimizeRequested();
@@ -29,6 +30,7 @@ protected:
     void mouseDoubleClickEvent(QMouseEvent* event) override;
 
 private:
+    QLabel* mark_ = nullptr;
     QLabel* title_label_ = nullptr;
     QAbstractButton* minimize_button_ = nullptr;
     QAbstractButton* maximize_button_ = nullptr;
