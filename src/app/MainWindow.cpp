@@ -16,8 +16,10 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFrame>
+#include <QGraphicsOpacityEffect>
 #include <QHBoxLayout>
 #include <QHideEvent>
+#include <QKeySequence>
 #include <QImage>
 #include <QLabel>
 #include <QLineEdit>
@@ -28,6 +30,7 @@
 #include <QScreen>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QShortcut>
 #include <QShowEvent>
 #include <QSignalBlocker>
 #include <QStringConverter>
@@ -187,6 +190,7 @@ MainWindow::MainWindow(bool automation, QWidget* parent)
     PopulateAudioDevices();
     ApplyPersistedSettings();
     ConnectSignals();
+    InstallShortcuts();
     connect(&Theme::Instance(), &Theme::changed, this, &MainWindow::ApplyTheme);
     if (!automation_) {
         CreateTray();
@@ -431,25 +435,33 @@ QWidget* MainWindow::BuildAudioCard() {
         auto* h = new QHBoxLayout(row);
         h->setContentsMargins(0, 0, 0, 0);
         h->setSpacing(0);
-        h->addWidget(MakeIconLabel(microphone ? Icon::Mic : Icon::Speaker, 20,
-                                   IconTone::Secondary, row));
-        h->addSpacing(10);
+
+        // The icon/label/device/meter group is dimmed when the source is not
+        // recorded; the toggle stays at full contrast and clickable.
+        auto* body = new QWidget(row);
+        auto* b = new QHBoxLayout(body);
+        b->setContentsMargins(0, 0, 0, 0);
+        b->setSpacing(0);
+        b->addWidget(MakeIconLabel(microphone ? Icon::Mic : Icon::Speaker, 20,
+                                   IconTone::Secondary, body));
+        b->addSpacing(10);
         auto* label = new QLabel(
             microphone ? QStringLiteral("麦克风") : QStringLiteral("系统声音"),
-            row);
+            body);
         label->setObjectName(QStringLiteral("rowLabel"));
         label->setFixedWidth(64);
-        h->addWidget(label);
-        h->addSpacing(10);
+        b->addWidget(label);
+        b->addSpacing(10);
 
-        auto* device = new StyledComboBox(row);
+        auto* device = new StyledComboBox(body);
         device->setFixedHeight(36);
-        h->addWidget(device, 1);
-        h->addSpacing(10);
+        b->addWidget(device, 1);
+        b->addSpacing(10);
 
-        auto* meter = new LevelMeter(microphone ? 1 : 3, row);
-        h->addWidget(meter, 0, Qt::AlignVCenter);
-        h->addSpacing(8);
+        auto* meter = new LevelMeter(microphone ? 1 : 3, body);
+        b->addWidget(meter, 0, Qt::AlignVCenter);
+        b->addSpacing(8);
+        h->addWidget(body, 1);
 
         auto* toggle = new QPushButton(row);
         toggle->setObjectName(QStringLiteral("sourceToggle"));
@@ -461,18 +473,25 @@ QWidget* MainWindow::BuildAudioCard() {
         toggle->setIconSize(QSize(22, 22));
         h->addWidget(toggle, 0, Qt::AlignVCenter);
 
+        auto* dim = new QGraphicsOpacityEffect(body);
+        dim->setOpacity(1.0);
+        body->setGraphicsEffect(dim);
+
         if (microphone) {
             mic_device_combo_ = device;
             mic_meter_ = meter;
             mic_toggle_ = toggle;
+            mic_mode_dim_ = dim;
         } else {
             system_device_combo_ = device;
             system_meter_ = meter;
             system_toggle_ = toggle;
+            system_mode_dim_ = dim;
         }
         connect(toggle, &QPushButton::toggled, this,
                 [this, microphone] {
                     UpdateAudioUi(microphone);
+                    UpdateAudioModeFromToggles();
                     PersistSettings();
                 });
         return row;
@@ -484,10 +503,54 @@ QWidget* MainWindow::BuildAudioCard() {
     rows->addWidget(build_row(false));
     layout->addStretch(1);
     layout->addLayout(rows);
+    layout->addSpacing(8);
+
+    // Compact explicit source choice. The toggles above remain the direct
+    // mute controls; both stay in sync.
+    auto* mode_row = new QWidget(card);
+    auto* mode_layout = new QHBoxLayout(mode_row);
+    mode_layout->setContentsMargins(0, 0, 0, 0);
+    mode_layout->setSpacing(0);
+    mode_layout->addWidget(
+        MakeIconLabel(Icon::Speaker, 20, IconTone::Secondary, mode_row));
+    mode_layout->addSpacing(10);
+    auto* mode_label = new QLabel(QStringLiteral("录制声音"), mode_row);
+    mode_label->setObjectName(QStringLiteral("rowLabel"));
+    mode_label->setFixedWidth(64);
+    mode_layout->addWidget(mode_label);
+    mode_layout->addSpacing(10);
+
+    audio_mode_combo_ = new StyledComboBox(mode_row);
+    audio_mode_combo_->setFixedHeight(36);
+    audio_mode_combo_->addItem(
+        QStringLiteral("系统声音 + 麦克风"),
+        static_cast<int>(AudioSourceMode::Both));
+    audio_mode_combo_->addItem(QStringLiteral("仅麦克风"),
+                               static_cast<int>(AudioSourceMode::MicOnly));
+    audio_mode_combo_->addItem(QStringLiteral("仅系统声音"),
+                               static_cast<int>(AudioSourceMode::SystemOnly));
+    audio_mode_combo_->addItem(QStringLiteral("不录制声音"),
+                               static_cast<int>(AudioSourceMode::None));
+    mode_layout->addWidget(audio_mode_combo_, 1);
+    // Match the device combos' right edge (toggle 32 px + 8 px gap).
+    mode_layout->addSpacing(40);
+    layout->addWidget(mode_row);
     layout->addStretch(1);
+
+    connect(audio_mode_combo_,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int index) {
+                if (index < 0 || !audio_mode_combo_) {
+                    return;
+                }
+                SetAudioMode(static_cast<AudioSourceMode>(
+                    audio_mode_combo_->itemData(index).toInt()));
+                PersistSettings();
+            });
 
     UpdateAudioUi(true);
     UpdateAudioUi(false);
+    UpdateAudioModeUi();
     return card;
 }
 
@@ -781,14 +844,8 @@ void MainWindow::ApplyPersistedSettings() {
             system_device_combo_->findData(settings_.system_device_id);
         system_device_combo_->setCurrentIndex(index >= 0 ? index : 0);
     }
-    if (mic_toggle_) {
-        mic_toggle_->setChecked(settings_.microphone_enabled);
-    }
-    if (system_toggle_) {
-        system_toggle_->setChecked(settings_.system_audio_enabled);
-    }
-    UpdateAudioUi(true);
-    UpdateAudioUi(false);
+    // The mode owns both toggles; the stored booleans are derived from it.
+    SetAudioMode(settings_.audio_mode);
 }
 
 void MainWindow::SyncSettingsFromUi() {
@@ -813,12 +870,13 @@ void MainWindow::SyncSettingsFromUi() {
         settings_.system_device_id =
             system_device_combo_->currentData().toString();
     }
-    if (mic_toggle_) {
-        settings_.microphone_enabled = mic_toggle_->isChecked();
+    if (mic_toggle_ && system_toggle_) {
+        settings_.audio_mode = AudioModeFromFlags(
+            mic_toggle_->isChecked(), system_toggle_->isChecked());
     }
-    if (system_toggle_) {
-        settings_.system_audio_enabled = system_toggle_->isChecked();
-    }
+    settings_.microphone_enabled = AudioModeHasMicrophone(settings_.audio_mode);
+    settings_.system_audio_enabled =
+        AudioModeHasSystemAudio(settings_.audio_mode);
 }
 
 void MainWindow::PersistSettings() {
@@ -1074,6 +1132,123 @@ void MainWindow::UpdateAudioUi(bool microphone) {
     toggle->setToolTip(enabled ? QStringLiteral("静音") : QStringLiteral("开启"));
 }
 
+void MainWindow::SetAudioMode(AudioSourceMode mode) {
+    const int value = static_cast<int>(mode);
+    if (value < 0 || value > static_cast<int>(AudioSourceMode::None)) {
+        mode = AudioSourceMode::Both;
+    }
+    settings_.audio_mode = mode;
+    const bool microphone = AudioModeHasMicrophone(mode);
+    const bool system_audio = AudioModeHasSystemAudio(mode);
+
+    if (mic_toggle_) {
+        const QSignalBlocker blocker(mic_toggle_);
+        mic_toggle_->setChecked(microphone);
+    }
+    if (system_toggle_) {
+        const QSignalBlocker blocker(system_toggle_);
+        system_toggle_->setChecked(system_audio);
+    }
+    if (audio_mode_combo_) {
+        const int index = audio_mode_combo_->findData(static_cast<int>(mode));
+        if (index >= 0) {
+            const QSignalBlocker blocker(audio_mode_combo_);
+            audio_mode_combo_->setCurrentIndex(index);
+        }
+    }
+
+    UpdateAudioUi(true);
+    UpdateAudioUi(false);
+    UpdateAudioModeUi();
+}
+
+void MainWindow::UpdateAudioModeFromToggles() {
+    if (!mic_toggle_ || !system_toggle_) {
+        return;
+    }
+    const AudioSourceMode mode = AudioModeFromFlags(
+        mic_toggle_->isChecked(), system_toggle_->isChecked());
+    settings_.audio_mode = mode;
+    if (audio_mode_combo_) {
+        const int index = audio_mode_combo_->findData(static_cast<int>(mode));
+        if (index >= 0 && index != audio_mode_combo_->currentIndex()) {
+            const QSignalBlocker blocker(audio_mode_combo_);
+            audio_mode_combo_->setCurrentIndex(index);
+        }
+    }
+    UpdateAudioModeUi();
+}
+
+void MainWindow::UpdateAudioModeUi() {
+    if (!mic_mode_dim_ || !system_mode_dim_) {
+        return;
+    }
+    AudioSourceMode mode = settings_.audio_mode;
+    if (audio_mode_combo_) {
+        mode = static_cast<AudioSourceMode>(
+            audio_mode_combo_->currentData().toInt());
+    }
+    const int value = static_cast<int>(mode);
+    if (value < 0 || value > static_cast<int>(AudioSourceMode::None)) {
+        mode = AudioSourceMode::Both;
+    }
+    mic_mode_dim_->setOpacity(AudioModeHasMicrophone(mode) ? 1.0 : 0.45);
+    system_mode_dim_->setOpacity(AudioModeHasSystemAudio(mode) ? 1.0 : 0.45);
+}
+
+void MainWindow::InstallShortcuts() {
+    auto install = [this](QShortcut*& slot, const QString& text,
+                          Qt::ShortcutContext context, auto handler) {
+        delete slot;
+        slot = nullptr;
+        if (text.trimmed().isEmpty()) {
+            return;
+        }
+        const QKeySequence sequence(text, QKeySequence::PortableText);
+        if (sequence.isEmpty()) {
+            return;
+        }
+        slot = new QShortcut(sequence, this);
+        slot->setContext(context);
+        connect(slot, &QShortcut::activated, this, handler);
+    };
+
+    install(start_stop_shortcut_, settings_.shortcut_start_stop,
+            Qt::WindowShortcut, [this] {
+                if (recording_) {
+                    StopRecording();
+                } else {
+                    StartRecording();
+                }
+            });
+    // Application-wide so it also restores a window that is hidden in the
+    // tray; hide() suspends the idle preview and showEvent resumes it.
+    install(show_hide_shortcut_, settings_.shortcut_show_hide,
+            Qt::ApplicationShortcut, [this] {
+                if (isVisible() && !isMinimized()) {
+                    hide();
+                } else {
+                    ShowMainWindow();
+                }
+            });
+    install(open_folder_shortcut_, settings_.shortcut_open_folder,
+            Qt::WindowShortcut, [this] { OpenOutputFolder(); });
+}
+
+void MainWindow::OpenOutputFolder() {
+    QString directory = settings_.output_directory;
+    if (directory.isEmpty()) {
+        directory = QFileInfo(output_edit_->text().trimmed()).absolutePath();
+    }
+    if (directory.isEmpty()) {
+        directory = DefaultOutputDirectory();
+    }
+    if (directory.isEmpty() ||
+        !QDesktopServices::openUrl(QUrl::fromLocalFile(directory))) {
+        ShowStatus(QStringLiteral("无法打开保存文件夹"), true, 4000);
+    }
+}
+
 void MainWindow::OpenSettings() {
     if (recording_) {
         return;
@@ -1108,6 +1283,8 @@ void MainWindow::OpenSettings() {
 
     SaveAppSettings(settings_);
     ApplyAutoStart(settings_.auto_start);
+    // New sequences take effect immediately after 保存设置.
+    InstallShortcuts();
 
     const bool path_settings_changed =
         container_ != previous_container ||
@@ -1350,8 +1527,19 @@ hmmob::RecorderConfig MainWindow::BuildConfig() const {
     // HDR capture only exists on the desktop-duplication path.
     config.hdr = selected_mode_ == 0 && hdr_;
     config.camera_index = camera_index_;
-    config.system_audio = system_toggle_->isChecked();
-    config.microphone = mic_toggle_->isChecked();
+    AudioSourceMode audio_mode = settings_.audio_mode;
+    if (audio_mode_combo_) {
+        audio_mode = static_cast<AudioSourceMode>(
+            audio_mode_combo_->currentData().toInt());
+    }
+    const int audio_mode_value = static_cast<int>(audio_mode);
+    if (audio_mode_value < 0 ||
+        audio_mode_value > static_cast<int>(AudioSourceMode::None)) {
+        audio_mode = AudioSourceMode::Both;
+    }
+    // Neither source selected also disables the audio track entirely.
+    config.system_audio = AudioModeHasSystemAudio(audio_mode);
+    config.microphone = AudioModeHasMicrophone(audio_mode);
     config.system_device_id = system_device_combo_->currentData()
                                   .toString()
                                   .toStdString();
@@ -1696,6 +1884,9 @@ void MainWindow::SetConfigEnabled(bool enabled) {
     settings_button_->setEnabled(enabled);
     mic_toggle_->setEnabled(enabled);
     system_toggle_->setEnabled(enabled);
+    if (audio_mode_combo_) {
+        audio_mode_combo_->setEnabled(enabled);
+    }
     mic_device_combo_->setEnabled(enabled);
     system_device_combo_->setEnabled(enabled);
     output_edit_->setEnabled(enabled);
@@ -1740,7 +1931,6 @@ void MainWindow::CaptureSettingsScreenshots(const QString& directory) {
     dialog->setModal(false);
     dialog->show();
     QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
-
     const QStringList names = {
         QStringLiteral("general"), QStringLiteral("recording"),
         QStringLiteral("shortcuts"), QStringLiteral("output"),
@@ -1798,8 +1988,7 @@ void MainWindow::StartSmoke(int seconds, const QString& path,
     audio_codec_ = hmmob::AudioCodec::Aac;
     audio_sample_rate_ = 48000;
     audio_bitrate_ = 192000;
-    system_toggle_->setChecked(true);
-    mic_toggle_->setChecked(true);
+    SetAudioMode(AudioSourceMode::Both);
     {
         const QSignalBlocker mic_blocker(mic_device_combo_);
         const QSignalBlocker system_blocker(system_device_combo_);

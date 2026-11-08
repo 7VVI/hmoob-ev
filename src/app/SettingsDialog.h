@@ -9,6 +9,7 @@
 class QAbstractButton;
 class QButtonGroup;
 class QComboBox;
+class QKeySequenceEdit;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -52,6 +53,8 @@ private:
     QWidget* BuildAboutPage();
     QWidget* BuildFooter();
     void UpdateCompatibility();
+    void UpdateShortcutValidation();
+    void UpdateSaveEnabled();
     void SetThemeMode(int mode, bool announce);
     void UpdateSegmentIcons();
     void ResetToDefaults();
@@ -88,6 +91,12 @@ private:
     QComboBox* audio_bitrate_combo_ = nullptr;
     QComboBox* camera_combo_ = nullptr;
     QLabel* compatibility_hint_ = nullptr;
+
+    // 快捷键
+    QKeySequenceEdit* start_stop_edit_ = nullptr;
+    QKeySequenceEdit* show_hide_edit_ = nullptr;
+    QKeySequenceEdit* open_folder_edit_ = nullptr;
+    QLabel* shortcut_hint_ = nullptr;
 
     // 输出设置
     QLineEdit* directory_edit_ = nullptr;

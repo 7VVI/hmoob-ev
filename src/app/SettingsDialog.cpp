@@ -9,6 +9,7 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QKeySequenceEdit>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -21,6 +22,7 @@
 #include <QShowEvent>
 #include <QSignalBlocker>
 #include <QStackedWidget>
+#include <QStringList>
 #include <QVBoxLayout>
 #include <QWindow>
 
@@ -693,41 +695,49 @@ QWidget* SettingsDialog::BuildShortcutsPage() {
 
     layout->addWidget(MakePageTitle(QStringLiteral("快捷键"), page));
     layout->addSpacing(18);
-    layout->addWidget(MakeSectionTitle(QStringLiteral("录制快捷键"), page));
+    layout->addWidget(MakeSectionTitle(QStringLiteral("全局快捷键"), page));
     layout->addSpacing(6);
 
-    auto add_shortcut = [&](const QString& label, const QString& key,
-                            bool available) {
-        auto* control = new QWidget(page);
-        auto* control_layout = new QHBoxLayout(control);
-        control_layout->setContentsMargins(0, 0, 0, 0);
-        control_layout->setSpacing(0);
-        if (available) {
-            auto* chip = new QLabel(key, control);
-            chip->setObjectName(QStringLiteral("keyChip"));
-            control_layout->addWidget(chip);
-        } else {
-            auto* deferred = new QLabel(QStringLiteral("后续版本"), control);
-            deferred->setObjectName(QStringLiteral("deferredLabel"));
-            control_layout->addWidget(deferred);
+    auto add_shortcut = [&](const QString& label, const QString& object_name,
+                            QKeySequenceEdit*& edit, const QString& value) {
+        edit = new QKeySequenceEdit(page);
+        edit->setObjectName(object_name);
+        edit->setFixedSize(220, 38);
+        const QKeySequence sequence(value, QKeySequence::PortableText);
+        if (!sequence.isEmpty()) {
+            edit->setKeySequence(sequence);
         }
-        control_layout->addStretch(1);
-        auto* row = MakeLabeledRow(label, control, page, 160);
+        // Connect after the initial value so construction does not run the
+        // validation before every editor exists.
+        connect(edit, &QKeySequenceEdit::keySequenceChanged, this,
+                [this](const QKeySequence&) { UpdateShortcutValidation(); });
+        auto* row = MakeLabeledRow(label, edit, page, 160);
         row->setFixedHeight(44);
         layout->addWidget(row);
+        layout->addWidget(MakeSeparator(page));
     };
 
-    add_shortcut(QStringLiteral("开始 / 停止录制"), QStringLiteral("Ctrl+F9"),
-                 true);
-    layout->addWidget(MakeSeparator(page));
-    add_shortcut(QStringLiteral("暂停 / 继续"), QStringLiteral("Ctrl+F10"),
-                 false);
-    layout->addWidget(MakeSeparator(page));
-    add_shortcut(QStringLiteral("截图"), QString(), false);
+    add_shortcut(QStringLiteral("开始 / 停止录制"),
+                 QStringLiteral("startStopShortcut"), start_stop_edit_,
+                 base_.shortcut_start_stop);
+    add_shortcut(QStringLiteral("显示 / 隐藏主窗口"),
+                 QStringLiteral("showHideShortcut"), show_hide_edit_,
+                 base_.shortcut_show_hide);
+    add_shortcut(QStringLiteral("打开保存文件夹"),
+                 QStringLiteral("openFolderShortcut"), open_folder_edit_,
+                 base_.shortcut_open_folder);
 
-    layout->addSpacing(20);
-    layout->addWidget(
-        MakeNote(QStringLiteral("快捷键自定义将在后续版本提供"), page));
+    shortcut_hint_ = new QLabel(page);
+    shortcut_hint_->setObjectName(QStringLiteral("fieldError"));
+    shortcut_hint_->setContentsMargins(176, 0, 0, 0);
+    shortcut_hint_->setFixedHeight(18);
+    layout->addWidget(shortcut_hint_);
+
+    layout->addSpacing(6);
+    layout->addWidget(MakeNote(
+        QStringLiteral(
+            "按 Backspace 可清除快捷键，留空表示禁用。快捷键在保存设置后立即生效。"),
+        page));
     layout->addStretch(1);
     return page;
 }
@@ -903,8 +913,49 @@ void SettingsDialog::UpdateCompatibility() {
     }
 
     compatibility_hint_->setText(hint);
-    save_button_->setEnabled(hint.isEmpty());
+    UpdateSaveEnabled();
     audio_bitrate_combo_->setEnabled(audio_codec == hmmob::AudioCodec::Aac);
+}
+
+void SettingsDialog::UpdateShortcutValidation() {
+    if (!shortcut_hint_) {
+        return;
+    }
+    QStringList sequences;
+    for (QKeySequenceEdit* edit :
+         {start_stop_edit_, show_hide_edit_, open_folder_edit_}) {
+        if (!edit) {
+            continue;
+        }
+        const QString text =
+            edit->keySequence().toString(QKeySequence::PortableText);
+        if (!text.isEmpty()) {
+            sequences.append(text);
+        }
+    }
+    bool duplicate = false;
+    for (int i = 0; i < sequences.size() && !duplicate; ++i) {
+        for (int j = i + 1; j < sequences.size(); ++j) {
+            if (sequences.at(i) == sequences.at(j)) {
+                duplicate = true;
+                break;
+            }
+        }
+    }
+    shortcut_hint_->setText(
+        duplicate ? QStringLiteral("快捷键不能重复，请修改后再保存") : QString());
+    UpdateSaveEnabled();
+}
+
+void SettingsDialog::UpdateSaveEnabled() {
+    if (!save_button_) {
+        return;
+    }
+    const bool compatibility_ok =
+        !compatibility_hint_ || compatibility_hint_->text().isEmpty();
+    const bool shortcuts_ok =
+        !shortcut_hint_ || shortcut_hint_->text().isEmpty();
+    save_button_->setEnabled(compatibility_ok && shortcuts_ok);
 }
 
 void SettingsDialog::SetThemeMode(int mode, bool announce) {
@@ -1012,6 +1063,20 @@ void SettingsDialog::ResetToDefaults() {
         QDir::toNativeSeparators(DefaultOutputDirectory()));
     directory_edit_->setCursorPosition(0);
     auto_timestamp_check_->setChecked(defaults.auto_timestamp_filename);
+
+    if (start_stop_edit_) {
+        start_stop_edit_->setKeySequence(QKeySequence(
+            defaults.shortcut_start_stop, QKeySequence::PortableText));
+    }
+    if (show_hide_edit_) {
+        show_hide_edit_->setKeySequence(QKeySequence(
+            defaults.shortcut_show_hide, QKeySequence::PortableText));
+    }
+    if (open_folder_edit_) {
+        open_folder_edit_->setKeySequence(QKeySequence(
+            defaults.shortcut_open_folder, QKeySequence::PortableText));
+    }
+    UpdateShortcutValidation();
 }
 
 void SettingsDialog::BrowseOutputDirectory() {
@@ -1047,6 +1112,18 @@ AppSettings SettingsDialog::Collect() const {
         show_complete_check_->isChecked();
     if (language_combo_) {
         result.language = language_combo_->currentData().toString();
+    }
+    if (start_stop_edit_) {
+        result.shortcut_start_stop =
+            start_stop_edit_->keySequence().toString(QKeySequence::PortableText);
+    }
+    if (show_hide_edit_) {
+        result.shortcut_show_hide =
+            show_hide_edit_->keySequence().toString(QKeySequence::PortableText);
+    }
+    if (open_folder_edit_) {
+        result.shortcut_open_folder = open_folder_edit_->keySequence().toString(
+            QKeySequence::PortableText);
     }
     return result;
 }

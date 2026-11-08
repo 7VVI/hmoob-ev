@@ -19,11 +19,13 @@ class QAbstractButton;
 class QAction;
 class QCloseEvent;
 class QEvent;
+class QGraphicsOpacityEffect;
 class QHideEvent;
 class QLabel;
 class QLineEdit;
 class QPushButton;
 class QResizeEvent;
+class QShortcut;
 class QShowEvent;
 class QTimer;
 class QButtonGroup;
@@ -124,6 +126,14 @@ private:
     void SetError(const QString& error);
     void UpdateStatsLabels(const hmmob::RecorderStats& stats);
     void UpdateAudioUi(bool microphone);
+    // Applies an explicit source choice to the toggle buttons and the combo.
+    void SetAudioMode(AudioSourceMode mode);
+    // Re-derives the mode from the two toggles after the user mutes one.
+    void UpdateAudioModeFromToggles();
+    // Dims the rows that the current mode does not record.
+    void UpdateAudioModeUi();
+    void InstallShortcuts();
+    void OpenOutputFolder();
     void OpenSettings();
 
     void SyncSettingsFromUi();
@@ -170,10 +180,19 @@ private:
     StyledComboBox* system_device_combo_ = nullptr;
     QPushButton* mic_toggle_ = nullptr;
     QPushButton* system_toggle_ = nullptr;
+    StyledComboBox* audio_mode_combo_ = nullptr;
+    // Dim the device row (icon, label, combo, meter) when its source is not
+    // recorded; the toggles stay full-contrast and clickable.
+    QGraphicsOpacityEffect* mic_mode_dim_ = nullptr;
+    QGraphicsOpacityEffect* system_mode_dim_ = nullptr;
     LevelMeter* mic_meter_ = nullptr;
     LevelMeter* system_meter_ = nullptr;
     QPushButton* settings_button_ = nullptr;
     QPushButton* open_files_button_ = nullptr;
+
+    QShortcut* start_stop_shortcut_ = nullptr;
+    QShortcut* show_hide_shortcut_ = nullptr;
+    QShortcut* open_folder_shortcut_ = nullptr;
 
     struct ThemedIconLabel {
         QLabel* label = nullptr;

@@ -83,6 +83,19 @@ AppSettings LoadAppSettings() {
     settings.system_audio_enabled =
         store.value(QStringLiteral("audio/system_enabled"), true).toBool();
 
+    // audio/mode is authoritative. Older builds only stored the two booleans,
+    // so derive the mode from them when the key is absent.
+    const int audio_mode = store.value(QStringLiteral("audio/mode"), -1).toInt();
+    if (audio_mode >= 0 &&
+        audio_mode <= static_cast<int>(AudioSourceMode::None)) {
+        settings.audio_mode = static_cast<AudioSourceMode>(audio_mode);
+    } else {
+        settings.audio_mode = AudioModeFromFlags(settings.microphone_enabled,
+                                                 settings.system_audio_enabled);
+    }
+    settings.microphone_enabled = AudioModeHasMicrophone(settings.audio_mode);
+    settings.system_audio_enabled = AudioModeHasSystemAudio(settings.audio_mode);
+
     settings.output_directory =
         store.value(QStringLiteral("output/directory")).toString();
     settings.auto_timestamp_filename =
@@ -107,6 +120,21 @@ AppSettings LoadAppSettings() {
     settings.show_recording_complete_notification =
         store.value(QStringLiteral("general/show_recording_complete"), true)
             .toBool();
+
+    // An explicitly stored empty string means "disabled"; a missing key keeps
+    // the default.
+    if (store.contains(QStringLiteral("shortcuts/start_stop"))) {
+        settings.shortcut_start_stop =
+            store.value(QStringLiteral("shortcuts/start_stop")).toString();
+    }
+    if (store.contains(QStringLiteral("shortcuts/show_hide"))) {
+        settings.shortcut_show_hide =
+            store.value(QStringLiteral("shortcuts/show_hide")).toString();
+    }
+    if (store.contains(QStringLiteral("shortcuts/open_folder"))) {
+        settings.shortcut_open_folder =
+            store.value(QStringLiteral("shortcuts/open_folder")).toString();
+    }
 
     return settings;
 }
@@ -138,6 +166,8 @@ void SaveAppSettings(const AppSettings& settings) {
                    settings.microphone_enabled);
     store.setValue(QStringLiteral("audio/system_enabled"),
                    settings.system_audio_enabled);
+    store.setValue(QStringLiteral("audio/mode"),
+                   static_cast<int>(settings.audio_mode));
     store.setValue(QStringLiteral("output/directory"),
                    settings.output_directory);
     store.setValue(QStringLiteral("output/auto_timestamp"),
@@ -152,6 +182,12 @@ void SaveAppSettings(const AppSettings& settings) {
                    settings.hide_notifications_while_recording);
     store.setValue(QStringLiteral("general/show_recording_complete"),
                    settings.show_recording_complete_notification);
+    store.setValue(QStringLiteral("shortcuts/start_stop"),
+                   settings.shortcut_start_stop);
+    store.setValue(QStringLiteral("shortcuts/show_hide"),
+                   settings.shortcut_show_hide);
+    store.setValue(QStringLiteral("shortcuts/open_folder"),
+                   settings.shortcut_open_folder);
     store.sync();
 }
 

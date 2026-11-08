@@ -5,6 +5,31 @@
 
 #include "core/audio/AudioCodec.h"
 
+// The two audio sources are independent; the UI presents the four meaningful
+// combinations as one explicit choice.
+enum class AudioSourceMode { Both = 0, MicOnly = 1, SystemOnly = 2, None = 3 };
+
+inline bool AudioModeHasMicrophone(AudioSourceMode mode) {
+    return mode == AudioSourceMode::Both || mode == AudioSourceMode::MicOnly;
+}
+
+inline bool AudioModeHasSystemAudio(AudioSourceMode mode) {
+    return mode == AudioSourceMode::Both || mode == AudioSourceMode::SystemOnly;
+}
+
+inline AudioSourceMode AudioModeFromFlags(bool microphone, bool system_audio) {
+    if (microphone && system_audio) {
+        return AudioSourceMode::Both;
+    }
+    if (microphone) {
+        return AudioSourceMode::MicOnly;
+    }
+    if (system_audio) {
+        return AudioSourceMode::SystemOnly;
+    }
+    return AudioSourceMode::None;
+}
+
 // Everything the application remembers between runs. MainWindow keeps the
 // authoritative values while a recording is being configured; the settings
 // dialog edits a copy and MainWindow writes the accepted result back with
@@ -27,6 +52,9 @@ struct AppSettings {
     QString system_device_id;
     bool microphone_enabled = true;
     bool system_audio_enabled = true;
+    // Canonical audio-source choice. microphone_enabled/system_audio_enabled
+    // are kept in sync with it for the recorder config.
+    AudioSourceMode audio_mode = AudioSourceMode::Both;
 
     // Output settings.
     // Empty means the platform Movies directory (resolved lazily so a
@@ -44,6 +72,12 @@ struct AppSettings {
     bool close_to_tray = false;
     bool hide_notifications_while_recording = false;
     bool show_recording_complete_notification = true;
+
+    // Editable shortcuts, stored as QKeySequence portable strings. An empty
+    // string disables that shortcut.
+    QString shortcut_start_stop = QStringLiteral("Ctrl+F9");
+    QString shortcut_show_hide = QStringLiteral("Ctrl+F11");
+    QString shortcut_open_folder = QStringLiteral("Ctrl+F12");
 };
 
 // Reads the persisted preferences (org "Hmmob", app "Hmmob EV"). Missing or
