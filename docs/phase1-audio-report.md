@@ -6,9 +6,9 @@ Phase 1 音频子项目（WASAPI 系统声 Loopback + 麦克风 → 混音 → A
 
 - 音频链路各组件（环形缓冲、混音器、AAC 编码器、WASAPI 采集）与「视频 + 音频」MP4 封装均有自动化测试覆盖，完整 `ctest` **81/81 通过**（2 个因环境跳过）。
 - `FFmpeg muxer writes HEVC+AAC MP4` 验证了 HEVC 视频 + AAC 音频写入同一 MP4、解复用后 AAC 解码成功、采样率/声道数/帧数/时长正确。
-- **端到端带音频录制（真实设备录制 → 带音轨 MP4）在本次会话未验证**：当前会话没有正在呈现的物理显示器，DXGI 采集到 0 帧，管线无法写出任何视频包，音轨也随之无输出。该限制与音频改动无关，使用 `--no-audio` 可复现同样的 0 帧结果。详见第 6 节。
+- **端到端带音频录制已验证**：在显示器正常呈现后完成 10 秒 HEVC + AAC 录制，输出 600 帧视频 + 470 个音频包，`ffmpeg` 识别为 `hevc (Main) / aac (LC) 48000 Hz stereo`，全片解码退出码 0、无错误，音轨电平实测非静音。详见第 5.3 节。
 
-结论：**音频子项目代码完成、组件级验证通过；端到端验收待有活跃显示器的会话补测**。
+结论：**Phase 1 音频子项目完成**（组件测试 + 端到端 10 秒录制均通过）。
 
 ## 2. 环境
 
@@ -17,7 +17,7 @@ Phase 1 音频子项目（WASAPI 系统声 Loopback + 麦克风 → 混音 → A
 | 日期 | 2026-11-07 / 2026-11-08 |
 | 操作系统 | Windows 11 Pro 10.0.26300 |
 | GPU | AMD Radeon RX 6750 GRE 12GB |
-| 显示器 | 2560×1440 SDR（本次验证会话中未呈现，见第 6 节） |
+| 显示器 | 单显示器，2560×1440，SDR |
 | 音频接口 | WASAPI 共享模式（loopback + 麦克风） |
 | 音频编码 | AAC-LC，48 kHz，立体声，192 kbps，1024 采样/帧 |
 | 分支 / 提交 | `phase0`，`c3f22c6`..`aa80a12` |
@@ -81,12 +81,14 @@ $ctest = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7
 & $ctest --test-dir build/release -C Release --output-on-failure
 ```
 
-结果：**81/81 通过**，其中 2 个跳过（Catch2 `SKIP`）：
+结果：**81/81 通过**（0 失败），其中 2 个环境相关用例按 Catch2 `SKIP` 跳过：
 
 | 跳过用例 | 原因 |
 | --- | --- |
-| `DXGI capture acquires frames from the primary display` | 当前会话桌面未呈现（无新桌面帧） |
-| `WasapiCapture loopback receives packets` | 端点空闲，录制期间无音频播放 |
+| `DXGI capture acquires frames from the primary display` | 首次运行时桌面未呈现（无新桌面帧）；显示器恢复后该用例通过 |
+| `WasapiCapture loopback receives packets` | 端点空闲，测试期间无音频播放 |
+
+显示器恢复后重跑：80 个用例执行并通过，仅 loopback 空闲用例跳过。
 
 音频相关覆盖：
 
@@ -106,33 +108,56 @@ $ctest = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7
 - 音频流 `sample_rate == 48000`、`ch_layout.nb_channels == 2`、`frame_size == 1024`、`initial_padding == 1024`、`extradata_size` 与 AAC 编码器输出一致。
 - 逐包断言 `pts == dts` 且 `duration` 恒定；AAC 解码成功，解码帧采样率/声道数正确。
 
-### 5.3 端到端尝试（未通过，环境原因）
+### 5.3 端到端 10 秒录制（通过）
 
-命令：
+显示器恢复呈现后，于 2026-11-08 运行：
 
 ```powershell
-.\build\release\Release\evspike.exe --output C:/temp/hmmob-audio.mp4 --seconds 3 --fps 60 --codec hevc --bitrate 50000000
+.\build\release\Release\evspike.exe --output C:/temp/hmmob-audio.mp4 --seconds 10 --fps 60 --codec hevc --bitrate 50000000
 ```
 
-输出：
+进程输出（exit 0）：
 
 ```text
-warning: achieved 0/180 target frames; output duration is shorter than requested
-FfmpegMuxer: closing without a written header
-muxer close failed
 display=0 2560x1440 format=87 fps=60 codec=hevc bitrate=50000000
-acquired=0 new_desktop=0 encoded=0 packets=0 bytes=0 encode_errors=0 audio_packets=0 audio_bytes=0 elapsed=3.01s avg_fps=0.00
+acquired=146 new_desktop=146 encoded=600 packets=600 bytes=4274031 encode_errors=0 audio_packets=470 audio_bytes=222001 elapsed=10.01s avg_fps=59.92
 ```
 
-（上面为含 `aa80a12` 启动对齐修复后的运行输出。）
+`ffmpeg -i` 元数据：
 
-`C:/temp/hmmob-audio.mp4` 为 0 字节（`moov atom not found`）。相同命令加 `--no-audio` 得到完全相同的 0 帧结果，说明失败发生在视频采集环节，与音频改动无关。
+| 项目 | 值 |
+| --- | --- |
+| 时长 / 起始时间 | 00:00:10.00 / 0.000000 |
+| 总码率 | 3609 kb/s |
+| 视频 | `hevc (Main) (hvc1)`，`yuv420p(tv, bt709)`，2560×1440，60 fps |
+| 音频 | `aac (LC)`，48000 Hz，立体声，177 kb/s |
+| `mp4_data_incomplete` | false |
+| 文件大小 | 4,511,415 B（约 4.30 MiB） |
 
-两路音频设备本身初始化正常（无 `warning` 输出），AAC 编码器也正常创建；由于 0 帧视频导致 header 从未写入，音轨没有落盘。这是本会话的显示器环境限制，不是音频链路缺陷，但也不构成音频端到端通过的证据。
+全片解码：
+
+```powershell
+ffmpeg -v error -i C:/temp/hmmob-audio.mp4 -f null -
+```
+
+退出码 0，无错误输出。
+
+音轨电平（`volumedetect`）：`n_samples=960512`（10 s × 48000 × 2 声道 + AAC priming），`mean_volume=-2.0 dB`，`max_volume=0.0 dB`，即音轨包含真实采集内容而非静音。
+
+来源分离验证（各 5 秒，同样 `ffmpeg` 校验）：
+
+| 命令 | audio_packets / bytes | 电平 | 结论 |
+| --- | --- | --- | --- |
+| `--no-mic`（仅系统声） | 236 / 1,431 | mean -91.0 dB，max -91.0 dB | 系统声通路正常建立；录制期间系统无播放，捕获为数字静音（AAC 静音帧极小） |
+| `--no-system-audio`（仅麦克风） | 236 / 99,947 | mean -2.5 dB，max 0.0 dB | 麦克风通路采集到真实内容 |
+
+因此 10 秒混音片段中的有效内容来自麦克风；WASAPI loopback 携带真实系统声的端到端验证仍需在播放音频时补测。
+
+> 在此之前的会话中显示器未呈现，相同命令得到 `acquired=0 encoded=0 audio_packets=0`、0 字节 MP4、退出码 1，加 `--no-audio` 结果相同；那是环境限制而非音频链路缺陷。该次失败也确认了「未写入 header 时不产出坏文件、以非零码结束」的行为。
 
 ## 6. 限制与未验证项
 
-1. **端到端带音频 MP4 未验证**：需要有正在呈现的物理显示器时重跑 3 秒与 10 秒录制，并用 `ffmpeg -i` 检查 `hevc + aac`、48 kHz 立体声与解码退出码。本报告不声称该项已通过。
+1. **端到端验证范围有限**：容器、流参数、全片解码与麦克风内容已确认；系统声通路在录制期间无播放，仅验证到「正确输出数字静音」，未验证真实系统声内容；未做分钟级长时间录制，也未人工比对音画主观同步（如口型或敲击对齐）。
 2. **音频不作为主时钟**：音轨长度由视频帧数推导（`(encoded_frames + 1) * 48000 / fps`）。若采集线程长时间阻塞导致实际采样不足，会用当前可读采样补齐（短时欠载），不做基于音频时钟的丢帧/补帧。Phase 1.5 处理。
 3. **设备热切换未做**：录制开始后新增/移除设备不会重建 `WasapiCapture`；设备被移除时该路采集失败并按降级策略处理。
 4. **无噪声抑制/回声消除/自动增益**：麦克风仅做采样格式转换与增益，未接入 AEC/NS/AGC。
@@ -143,7 +168,7 @@ acquired=0 new_desktop=0 encoded=0 packets=0 bytes=0 encode_errors=0 audio_packe
 
 ## 7. 下一步（Phase 1.5）
 
-- 在活跃显示器会话中完成 3 s / 10 s 端到端音频录制与解码校验，补入本报告。
+- 在系统正在播放音频时验证 loopback 真实内容，并做分钟级长时间录制与音画漂移测量。
 - 音频主时钟：以采样数为准做视频帧节流或音频丢补，避免长时间运行后的音画漂移。
 - 设备热切换与设备变化通知（`IMMNotificationClient`）。
 - 麦克风 AEC/NS/AGC，以及可选的多声道直通。

@@ -2,7 +2,7 @@
 
 Windows 高性能录屏软件。
 
-当前阶段：Phase 0 完成（DXGI 抓屏 + AMD AMF 编码 + MP4 验证）；Phase 1 音频子项目实现完成。
+当前阶段：Phase 0 完成（DXGI 抓屏 + AMD AMF 编码 + MP4 验证）；Phase 1 音频子项目完成并端到端验证。
 
 ## Phase 0 状态
 
@@ -14,9 +14,9 @@ Phase 0 核心管线（DXGI Desktop Duplication → D3D11 BGRA→NV12 → AMD AM
 
 ## Phase 1 音频状态
 
-WASAPI 系统声 Loopback + 麦克风采集、混音（增益/静音/软限幅）、AAC-LC 48 kHz 立体声编码与 MP4 音轨已实现并接入 `evspike`；`ctest` 81/81 通过（2 个用例因当前会话环境跳过）。音视频同封装有自动化测试覆盖（`FFmpeg muxer writes HEVC+AAC MP4`）。
+WASAPI 系统声 Loopback + 麦克风采集、混音（增益/静音/软限幅）、AAC-LC 48 kHz 立体声编码与 MP4 音轨已实现并接入 `evspike`；`ctest` 81/81 通过（0 失败；无呈现桌面或无声输出时个别硬件用例跳过）。音视频同封装有自动化测试覆盖（`FFmpeg muxer writes HEVC+AAC MP4`）。
 
-> 端到端带音频录制（真实设备 → 带音轨 MP4）因验证时会话没有活跃显示器、DXGI 采集 0 帧而**尚未验证**，不视为通过。详见 [`docs/phase1-audio-report.md`](docs/phase1-audio-report.md)。
+端到端已验证：10 秒录制输出 2560×1440@60 HEVC + AAC 48 kHz 立体声 MP4，全片解码退出码 0，麦克风音轨为真实内容；系统无播放时 loopback 输出数字静音。详见 [`docs/phase1-audio-report.md`](docs/phase1-audio-report.md)。
 
 ## 前置条件
 
