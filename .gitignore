@@ -13,3 +13,4 @@
 *.h264
 *.hevc
 /.idea/
+/dist/
