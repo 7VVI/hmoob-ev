@@ -61,19 +61,31 @@ TEST_CASE("Recorder publishes preview frames", "[integration]") {
         SKIP("recorder unavailable: " + error);
     }
 
+    // Wait for at least three published previews. A successful Start with no
+    // preview frames within the timeout is a failure, not a skip.
     std::shared_ptr<const hmmob::PreviewFrame> frame;
+    uint64_t last_sequence = 0;
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(3);
     while (std::chrono::steady_clock::now() < deadline) {
-        frame = recorder.LatestPreview();
-        if (frame && frame->sequence > 0) {
-            break;
+        std::shared_ptr<const hmmob::PreviewFrame> current =
+            recorder.LatestPreview();
+        if (current) {
+            // Sequence numbers only ever increase across polls.
+            REQUIRE(current->sequence >= last_sequence);
+            if (current->sequence > last_sequence) {
+                last_sequence = current->sequence;
+                frame = std::move(current);
+            }
+            if (last_sequence >= 3) {
+                break;
+            }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
 
     REQUIRE(frame != nullptr);
-    REQUIRE(frame->sequence > 0);
+    REQUIRE(last_sequence >= 3);
     REQUIRE(frame->width == 640);
     REQUIRE(frame->height == 360);
     REQUIRE(frame->stride == frame->width * 4);

@@ -39,12 +39,14 @@ bool VideoProcessor::Initialize(D3D11Device& d3d, int input_width,
                                 int input_height, int output_width,
                                 int output_height, DXGI_FORMAT output_format) {
     Reset();
+    last_error_ = S_OK;
 
     const bool format_supported =
         output_format == DXGI_FORMAT_NV12 ||
         output_format == DXGI_FORMAT_B8G8R8A8_UNORM;
     if (!d3d.device() || !d3d.context() || input_width <= 0 || input_height <= 0 ||
         output_width <= 0 || output_height <= 0 || !format_supported) {
+        last_error_ = E_INVALIDARG;
         return false;
     }
     device_ = d3d.device();
@@ -58,12 +60,14 @@ bool VideoProcessor::Initialize(D3D11Device& d3d, int input_width,
     HRESULT hr = device_->QueryInterface(IID_PPV_ARGS(&video_device_));
     if (FAILED(hr)) {
         LogHresult(__FILE__, __LINE__, hr);
+        last_error_ = hr;
         Reset();
         return false;
     }
     hr = context_->QueryInterface(IID_PPV_ARGS(&video_context_));
     if (FAILED(hr)) {
         LogHresult(__FILE__, __LINE__, hr);
+        last_error_ = hr;
         Reset();
         return false;
     }
@@ -83,12 +87,14 @@ bool VideoProcessor::Initialize(D3D11Device& d3d, int input_width,
     hr = video_device_->CreateVideoProcessorEnumerator(&content, &enumerator_);
     if (FAILED(hr)) {
         LogHresult(__FILE__, __LINE__, hr);
+        last_error_ = hr;
         Reset();
         return false;
     }
     hr = video_device_->CreateVideoProcessor(enumerator_.Get(), 0, &processor_);
     if (FAILED(hr)) {
         LogHresult(__FILE__, __LINE__, hr);
+        last_error_ = hr;
         Reset();
         return false;
     }
@@ -105,6 +111,7 @@ bool VideoProcessor::Initialize(D3D11Device& d3d, int input_width,
     hr = device_->CreateTexture2D(&out_desc, nullptr, &output_);
     if (FAILED(hr)) {
         LogHresult(__FILE__, __LINE__, hr);
+        last_error_ = hr;
         Reset();
         return false;
     }
@@ -116,6 +123,7 @@ bool VideoProcessor::Initialize(D3D11Device& d3d, int input_width,
         output_.Get(), enumerator_.Get(), &out_view_desc, &output_view_);
     if (FAILED(hr)) {
         LogHresult(__FILE__, __LINE__, hr);
+        last_error_ = hr;
         Reset();
         return false;
     }

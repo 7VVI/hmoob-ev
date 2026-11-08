@@ -172,6 +172,16 @@ void Recorder::Impl::PublishPreview(ID3D11DeviceContext* context,
     context->CopyResource(preview_staging.Get(),
                           preview_converter.output_texture());
 
+    // Allocate the frame before mapping: an allocation failure unwinds here
+    // with the staging texture still unmapped, and only the noexcept row copy
+    // runs while the texture is mapped.
+    auto preview = std::make_shared<PreviewFrame>();
+    preview->width = config.preview_width;
+    preview->height = config.preview_height;
+    preview->stride = config.preview_width * 4;
+    preview->bgra.resize(static_cast<size_t>(preview->stride) *
+                         static_cast<size_t>(preview->height));
+
     D3D11_MAPPED_SUBRESOURCE mapped{};
     const HRESULT map_hr =
         context->Map(preview_staging.Get(), 0, D3D11_MAP_READ, 0, &mapped);
@@ -181,12 +191,6 @@ void Recorder::Impl::PublishPreview(ID3D11DeviceContext* context,
         return;
     }
 
-    auto preview = std::make_shared<PreviewFrame>();
-    preview->width = config.preview_width;
-    preview->height = config.preview_height;
-    preview->stride = config.preview_width * 4;
-    preview->bgra.resize(static_cast<size_t>(preview->stride) *
-                         static_cast<size_t>(preview->height));
     const size_t row_bytes = static_cast<size_t>(preview->stride);
     for (int y = 0; y < preview->height; ++y) {
         std::memcpy(preview->bgra.data() + static_cast<size_t>(y) * row_bytes,
@@ -365,15 +369,24 @@ void Recorder::Impl::Run() {
     audio_track = audio_enabled;
 
     // Optional preview pipeline: downscale the latest frame to a small BGRA8
-    // texture for the UI. Any failure here disables previews but must never
-    // fail the recording.
-    if (config.preview_width > 0 && config.preview_height > 0 &&
-        config.preview_fps > 0) {
+    // texture for the UI. A deliberate disable (any value <= 0) stays silent;
+    // a requested preview that cannot be set up warns once with the failing
+    // HRESULT and never fails the recording.
+    const bool preview_requested =
+        config.preview_width > 0 && config.preview_height > 0 &&
+        config.preview_fps > 0;
+    if (preview_requested) {
         preview_interval = std::max(1, config.fps / config.preview_fps);
-        if (preview_converter.Initialize(d3d, width, height,
-                                         config.preview_width,
-                                         config.preview_height,
-                                         DXGI_FORMAT_B8G8R8A8_UNORM)) {
+        if (!preview_converter.Initialize(d3d, width, height,
+                                          config.preview_width,
+                                          config.preview_height,
+                                          DXGI_FORMAT_B8G8R8A8_UNORM)) {
+            std::fprintf(stderr,
+                         "warning: preview disabled (VideoProcessor "
+                         "Initialize failed: 0x%08lx)\n",
+                         static_cast<unsigned long>(
+                             preview_converter.last_error()));
+        } else {
             D3D11_TEXTURE2D_DESC staging_desc{};
             staging_desc.Width = static_cast<UINT>(config.preview_width);
             staging_desc.Height = static_cast<UINT>(config.preview_height);
@@ -384,12 +397,16 @@ void Recorder::Impl::Run() {
             staging_desc.Usage = D3D11_USAGE_STAGING;
             staging_desc.BindFlags = 0;
             staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-            preview_enabled = SUCCEEDED(d3d.device()->CreateTexture2D(
-                &staging_desc, nullptr, &preview_staging));
+            const HRESULT staging_hr = d3d.device()->CreateTexture2D(
+                &staging_desc, nullptr, &preview_staging);
+            preview_enabled = SUCCEEDED(staging_hr);
+            if (!preview_enabled) {
+                std::fprintf(stderr,
+                             "warning: preview disabled (CreateTexture2D "
+                             "failed: 0x%08lx)\n",
+                             static_cast<unsigned long>(staging_hr));
+            }
         }
-    }
-    if (!preview_enabled) {
-        ReportWarning("warning: preview disabled");
     }
 
     QpcClock clock;

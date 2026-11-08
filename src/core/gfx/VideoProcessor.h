@@ -20,6 +20,9 @@ public:
     // output_texture(). The parameter is kept for API symmetry and may be
     // removed in Phase 1.
     [[nodiscard]] bool Convert(ID3D11Texture2D* input, ID3D11Texture2D* output);
+    // HRESULT of the last failed Initialize(); S_OK when initialization
+    // succeeded or has not been attempted yet.
+    HRESULT last_error() const { return last_error_; }
     ID3D11Texture2D* output_texture() const { return output_.Get(); }
     int input_width() const { return input_width_; }
     int input_height() const { return input_height_; }
@@ -45,6 +48,7 @@ private:
     int output_width_ = 0;
     int output_height_ = 0;
     DXGI_FORMAT output_format_ = DXGI_FORMAT_NV12;
+    HRESULT last_error_ = S_OK;
     bool ready_ = false;
 };
 
