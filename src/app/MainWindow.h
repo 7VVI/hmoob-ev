@@ -7,6 +7,7 @@
 #include <memory>
 #include <vector>
 
+#include "app/AppSettings.h"
 #include "app/IconRenderer.h"
 #include "core/audio/AudioCodec.h"
 #include "core/gfx/D3D11Device.h"
@@ -14,8 +15,10 @@
 #include "core/recorder/Recorder.h"
 
 class QAbstractButton;
+class QAction;
 class QCloseEvent;
 class QEvent;
+class QHideEvent;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -29,6 +32,7 @@ class NavTabButton;
 class PreviewWidget;
 class RecordButton;
 class StyledComboBox;
+class QSystemTrayIcon;
 class TitleBar;
 
 // Optional capture-mode selection for an automated smoke run. Region and
@@ -44,8 +48,19 @@ class MainWindow : public QWidget {
     Q_OBJECT
 
 public:
-    explicit MainWindow(QWidget* parent = nullptr);
+    // `automation` suppresses the tray icon and every other desktop side
+    // effect of the general settings (used by --smoke and the settings
+    // screenshot hook, which must stay deterministic).
+    explicit MainWindow(bool automation = false, QWidget* parent = nullptr);
     ~MainWindow() override;
+
+    // True when the saved preferences ask for a tray-only start. Automation
+    // runs always return false so they never begin hidden.
+    [[nodiscard]] bool StartHiddenToTray() const;
+
+    // Verification hook: renders every settings page to <directory> and
+    // exits the application. Used by --settings-screenshot.
+    void CaptureSettingsScreenshots(const QString& directory);
 
     // Automated verification hook: starts a recording after the window is
     // shown, stops it after `seconds`, writes "<path>.smoke.txt" with the
@@ -55,6 +70,7 @@ public:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
     void showEvent(QShowEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void changeEvent(QEvent* event) override;
@@ -107,6 +123,14 @@ private:
     void UpdateAudioUi(bool microphone);
     void OpenSettings();
 
+    void SyncSettingsFromUi();
+    void ApplyPersistedSettings();
+    void PersistSettings();
+    void CreateTray();
+    void UpdateTrayMenu();
+    void ShowMainWindow();
+    void ShowTrayMessage(const QString& title, const QString& text);
+
     void UpdateStatusGeometry();
     void ToggleMaximize();
     void SyncMaximizedState();
@@ -116,6 +140,13 @@ private:
     hmmob::Recorder recorder_;
     hmmob::DesktopPreview preview_source_;
     std::vector<hmmob::DisplayInfo> displays_;
+
+    AppSettings settings_;
+    QSystemTrayIcon* tray_icon_ = nullptr;
+    QAction* tray_start_action_ = nullptr;
+    QAction* tray_stop_action_ = nullptr;
+    bool automation_ = false;
+    bool quitting_ = false;
 
     TitleBar* title_bar_ = nullptr;
     PreviewWidget* preview_ = nullptr;

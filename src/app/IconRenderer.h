@@ -37,6 +37,9 @@ enum class Icon {
     ChevronUp,
     RecordDot,
     StopSquare,
+    Keyboard,
+    Sun,
+    Moon,
 };
 
 namespace IconRenderer {

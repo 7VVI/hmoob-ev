@@ -265,6 +265,45 @@ void PaintCheck(QPainter& p, const QColor& color, qreal stroke) {
     p.drawPath(path);
 }
 
+void PaintKeyboard(QPainter& p, const QColor& color, qreal stroke) {
+    p.setPen(QPen(color, stroke, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+    p.drawRoundedRect(QRectF(2.8, 6.2, 18.4, 11.8), 2.2, 2.2);
+    p.setPen(Qt::NoPen);
+    p.setBrush(color);
+    for (const qreal y : {9.4, 12.2}) {
+        for (const qreal x : {5.6, 8.8, 12.0, 15.2, 18.4}) {
+            p.drawRoundedRect(QRectF(x - 0.8, y - 0.7, 1.6, 1.4), 0.4, 0.4);
+        }
+    }
+    p.setPen(QPen(color, qMax<qreal>(stroke, 1.6), Qt::SolidLine,
+                  Qt::RoundCap));
+    p.drawLine(QPointF(8.6, 15.2), QPointF(15.4, 15.2));
+}
+
+void PaintSun(QPainter& p, const QColor& color, qreal stroke) {
+    p.setPen(QPen(color, stroke, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(QPointF(12.0, 12.0), 4.3, 4.3);
+    for (int i = 0; i < 8; ++i) {
+        const qreal angle = qDegreesToRadians(i * 45.0);
+        const qreal dx = qCos(angle);
+        const qreal dy = qSin(angle);
+        p.drawLine(QPointF(12.0 + dx * 7.0, 12.0 + dy * 7.0),
+                   QPointF(12.0 + dx * 9.4, 12.0 + dy * 9.4));
+    }
+}
+
+void PaintMoon(QPainter& p, const QColor& color, qreal stroke) {
+    QPainterPath full;
+    full.addEllipse(QPointF(12.0, 12.0), 7.8, 7.8);
+    QPainterPath cut;
+    cut.addEllipse(QPointF(16.6, 8.2), 7.0, 7.0);
+    p.setPen(QPen(color, stroke, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+    p.drawPath(full.subtracted(cut));
+}
+
 }  // namespace
 
 namespace IconRenderer {
@@ -387,6 +426,15 @@ void Paint(QPainter& painter, Icon icon, const QRectF& rect,
             painter.setPen(Qt::NoPen);
             painter.setBrush(color);
             painter.drawRoundedRect(QRectF(6.0, 6.0, 12.0, 12.0), 2.4, 2.4);
+            break;
+        case Icon::Keyboard:
+            PaintKeyboard(painter, color, stroke);
+            break;
+        case Icon::Sun:
+            PaintSun(painter, color, stroke);
+            break;
+        case Icon::Moon:
+            PaintMoon(painter, color, stroke);
             break;
     }
     painter.restore();

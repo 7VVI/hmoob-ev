@@ -1,5 +1,6 @@
 #include "app/MainWindow.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QButtonGroup>
 #include <QCloseEvent>
@@ -16,8 +17,11 @@
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QHideEvent>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QResizeEvent>
@@ -26,8 +30,9 @@
 #include <QScrollBar>
 #include <QShowEvent>
 #include <QSignalBlocker>
-#include <QStandardPaths>
 #include <QStringConverter>
+#include <QStringList>
+#include <QSystemTrayIcon>
 #include <QTextStream>
 #include <QThread>
 #include <QTimer>
@@ -35,6 +40,7 @@
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <utility>
 
 #ifndef NOMINMAX
@@ -141,7 +147,17 @@ QString FormatSize(int64_t bytes) {
 
 }  // namespace
 
-MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
+MainWindow::MainWindow(bool automation, QWidget* parent)
+    : QWidget(parent), automation_(automation) {
+    settings_ = LoadAppSettings();
+    bitrate_ = settings_.video_bitrate;
+    hdr_ = settings_.hdr;
+    camera_index_ = settings_.camera_index;
+    container_ = settings_.container_extension;
+    audio_codec_ = settings_.audio_codec;
+    audio_sample_rate_ = settings_.audio_sample_rate;
+    audio_bitrate_ = settings_.audio_bitrate;
+
     setWindowTitle(QStringLiteral("Hmmob 录屏"));
     setObjectName(QStringLiteral("root"));
     setAttribute(Qt::WA_StyledBackground, true);
@@ -156,7 +172,14 @@ MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
     PopulateDisplays();
     PopulateCameras();
     PopulateAudioDevices();
+    ApplyPersistedSettings();
     ConnectSignals();
+    if (!automation_) {
+        CreateTray();
+        // Keep the registry in step with the persisted preference; the user
+        // may have removed the entry from outside the app.
+        ApplyAutoStart(settings_.auto_start);
+    }
 
     const QRect available = screen()->availableGeometry();
     move(available.center() - QPoint(width() / 2, height() / 2));
@@ -387,7 +410,10 @@ QWidget* MainWindow::BuildAudioCard() {
             system_toggle_ = toggle;
         }
         connect(toggle, &QPushButton::toggled, this,
-                [this, microphone] { UpdateAudioUi(microphone); });
+                [this, microphone] {
+                    UpdateAudioUi(microphone);
+                    PersistSettings();
+                });
         return row;
     };
 
@@ -651,6 +677,189 @@ void MainWindow::PopulateAudioDevices() {
     fill(system_device_combo_, true);
 }
 
+void MainWindow::ApplyPersistedSettings() {
+    if (fps_combo_) {
+        const int index = fps_combo_->findData(settings_.fps);
+        if (index >= 0) {
+            fps_combo_->setCurrentIndex(index);
+        }
+    }
+    if (codec_combo_) {
+        const int index = codec_combo_->findData(settings_.video_codec);
+        if (index >= 0) {
+            codec_combo_->setCurrentIndex(index);
+        }
+    }
+
+    // Restore the capture mode without touching the preview: the idle
+    // duplication starts from showEvent, never from the constructor.
+    selected_mode_ = settings_.capture_mode >= 0 && settings_.capture_mode <= 3
+                         ? settings_.capture_mode
+                         : 0;
+    if (mode_group_) {
+        if (QAbstractButton* tile = mode_group_->button(selected_mode_)) {
+            const QSignalBlocker blocker(mode_group_);
+            tile->setChecked(true);
+        }
+    }
+    screen_tab_->SetActive(selected_mode_ == 0);
+    region_tab_->SetActive(selected_mode_ == 1);
+    window_tab_->SetActive(selected_mode_ == 2);
+    camera_tab_->SetActive(selected_mode_ == 3);
+    start_button_->setEnabled(CanStart());
+
+    if (mic_device_combo_) {
+        const int index = mic_device_combo_->findData(settings_.mic_device_id);
+        mic_device_combo_->setCurrentIndex(index >= 0 ? index : 0);
+    }
+    if (system_device_combo_) {
+        const int index =
+            system_device_combo_->findData(settings_.system_device_id);
+        system_device_combo_->setCurrentIndex(index >= 0 ? index : 0);
+    }
+    if (mic_toggle_) {
+        mic_toggle_->setChecked(settings_.microphone_enabled);
+    }
+    if (system_toggle_) {
+        system_toggle_->setChecked(settings_.system_audio_enabled);
+    }
+    UpdateAudioUi(true);
+    UpdateAudioUi(false);
+}
+
+void MainWindow::SyncSettingsFromUi() {
+    settings_.video_bitrate = bitrate_;
+    settings_.hdr = hdr_;
+    settings_.camera_index = camera_index_;
+    settings_.container_extension = container_;
+    settings_.audio_codec = audio_codec_;
+    settings_.audio_sample_rate = audio_sample_rate_;
+    settings_.audio_bitrate = audio_bitrate_;
+    if (codec_combo_) {
+        settings_.video_codec = codec_combo_->currentData().toString();
+    }
+    if (fps_combo_) {
+        settings_.fps = fps_combo_->currentData().toInt();
+    }
+    settings_.capture_mode = selected_mode_;
+    if (mic_device_combo_) {
+        settings_.mic_device_id = mic_device_combo_->currentData().toString();
+    }
+    if (system_device_combo_) {
+        settings_.system_device_id =
+            system_device_combo_->currentData().toString();
+    }
+    if (mic_toggle_) {
+        settings_.microphone_enabled = mic_toggle_->isChecked();
+    }
+    if (system_toggle_) {
+        settings_.system_audio_enabled = system_toggle_->isChecked();
+    }
+}
+
+void MainWindow::PersistSettings() {
+    // Smoke runs pin their own options; never let them overwrite the user's
+    // preferences.
+    if (automation_ || smoke_) {
+        return;
+    }
+    SyncSettingsFromUi();
+    SaveAppSettings(settings_);
+}
+
+bool MainWindow::StartHiddenToTray() const {
+    return !automation_ && tray_icon_ != nullptr &&
+           settings_.minimize_to_tray_on_start;
+}
+
+void MainWindow::CreateTray() {
+    if (!QSystemTrayIcon::isSystemTrayAvailable()) {
+        return;
+    }
+    tray_icon_ = new QSystemTrayIcon(this);
+    QIcon icon;
+    for (const int size : {16, 24, 32, 64}) {
+        icon.addPixmap(IconRenderer::Pixmap(Icon::Play, size,
+                                            QColor(0x2F, 0x6B, 0xFF)));
+    }
+    tray_icon_->setIcon(icon);
+    tray_icon_->setToolTip(QStringLiteral("Hmmob 录屏"));
+
+    auto* menu = new QMenu(this);
+    auto* show_action = menu->addAction(QStringLiteral("显示主窗口"));
+    tray_start_action_ = menu->addAction(QStringLiteral("开始录制"));
+    tray_stop_action_ = menu->addAction(QStringLiteral("停止录制"));
+    menu->addSeparator();
+    auto* quit_action = menu->addAction(QStringLiteral("退出"));
+    tray_icon_->setContextMenu(menu);
+
+    connect(show_action, &QAction::triggered, this, &MainWindow::ShowMainWindow);
+    connect(tray_start_action_, &QAction::triggered, this, [this] {
+        if (recording_ || !CanStart()) {
+            ShowTrayMessage(QStringLiteral("Hmmob 录屏"),
+                            QStringLiteral("当前无法开始录制"));
+            return;
+        }
+        if (!StartRecording() && !last_error_.isEmpty()) {
+            ShowTrayMessage(QStringLiteral("Hmmob 录屏"), last_error_);
+        }
+    });
+    connect(tray_stop_action_, &QAction::triggered, this,
+            [this] { StopRecording(); });
+    connect(quit_action, &QAction::triggered, this, [this] {
+        quitting_ = true;
+        // Make sure the close confirmation is visible even when the window
+        // was hidden in the tray.
+        if (!isVisible()) {
+            showNormal();
+        }
+        close();
+        if (!isVisible()) {
+            QCoreApplication::quit();
+        } else {
+            quitting_ = false;
+        }
+    });
+    connect(menu, &QMenu::aboutToShow, this, &MainWindow::UpdateTrayMenu);
+    connect(tray_icon_, &QSystemTrayIcon::activated, this,
+            [this](QSystemTrayIcon::ActivationReason reason) {
+                if (reason == QSystemTrayIcon::Trigger ||
+                    reason == QSystemTrayIcon::DoubleClick) {
+                    ShowMainWindow();
+                }
+            });
+
+    UpdateTrayMenu();
+    tray_icon_->show();
+}
+
+void MainWindow::UpdateTrayMenu() {
+    if (tray_start_action_) {
+        tray_start_action_->setEnabled(!recording_ && CanStart());
+    }
+    if (tray_stop_action_) {
+        tray_stop_action_->setEnabled(recording_);
+    }
+}
+
+void MainWindow::ShowMainWindow() {
+    showNormal();
+    raise();
+    activateWindow();
+}
+
+void MainWindow::ShowTrayMessage(const QString& title, const QString& text) {
+    if (!tray_icon_ || !QSystemTrayIcon::supportsMessages()) {
+        return;
+    }
+    // 录制时隐藏桌面通知 also covers the "已最小化到托盘" balloon, which is
+    // exactly the one that can fire in the middle of a recording.
+    if (recording_ && settings_.hide_notifications_while_recording) {
+        return;
+    }
+    tray_icon_->showMessage(title, text, QSystemTrayIcon::Information, 4000);
+}
+
 bool MainWindow::CanStart() const {
     // Window and camera capture do not depend on an attached display.
     return has_display_ || selected_mode_ >= 2;
@@ -701,6 +910,8 @@ void MainWindow::ConnectSignals() {
                     SelectDisplay(resolution_combo_->itemData(index).toInt());
                 }
             });
+    connect(fps_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { PersistSettings(); });
     connect(codec_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) {
                 if (codec_combo_->currentData().toString() ==
@@ -713,7 +924,14 @@ void MainWindow::ConnectSignals() {
                             "HEVC 不支持该保存格式，请改用 H.264 或更换格式"),
                         true, 4000);
                 }
+                PersistSettings();
             });
+    connect(mic_device_combo_,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int) { PersistSettings(); });
+    connect(system_device_combo_,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int) { PersistSettings(); });
     connect(mode_group_, &QButtonGroup::idClicked, this,
             [this](int id) { SetMode(id); });
 }
@@ -773,6 +991,7 @@ void MainWindow::SetMode(int mode) {
         }
     }
     UpdateBadgeText();
+    PersistSettings();
 }
 
 void MainWindow::UpdateAudioUi(bool microphone) {
@@ -793,34 +1012,49 @@ void MainWindow::OpenSettings() {
     if (recording_) {
         return;
     }
-    const QString previous_container = container_;
-    SettingsDialog dialog(bitrate_, hdr_, camera_index_, container_,
-                          audio_codec_, audio_sample_rate_, audio_bitrate_,
-                          codec_combo_->currentData().toString(), this);
+    // Pick up choices made directly on the main window (codec, fps, mode,
+    // devices) so the dialog edits and carries the current state.
+    SyncSettingsFromUi();
+
+    const QString previous_container = settings_.container_extension;
+    const QString previous_directory = settings_.output_directory;
+    const bool previous_timestamp = settings_.auto_timestamp_filename;
+    const bool path_is_auto = output_edit_->text().trimmed() == auto_path_;
+
+    SettingsDialog dialog(settings_, this);
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
-    bitrate_ = dialog.bitrate();
-    hdr_ = dialog.hdr();
-    camera_index_ = dialog.cameraIndex();
-    container_ = dialog.containerExtension();
-    audio_codec_ = dialog.audioCodec();
-    audio_sample_rate_ = dialog.audioSampleRate();
-    audio_bitrate_ = dialog.audioBitrate();
+    settings_ = dialog.settings();
 
-    if (container_ == previous_container) {
-        return;
+    bitrate_ = settings_.video_bitrate;
+    hdr_ = settings_.hdr;
+    camera_index_ = settings_.camera_index;
+    if (camera_device_count_ > 0 &&
+        (camera_index_ < 0 || camera_index_ >= camera_device_count_)) {
+        camera_index_ = 0;
     }
-    // Follow the format with our own generated path, keeping the timestamp
-    // base. A path the user typed or picked is left alone; Start validates the
-    // extension it actually carries.
-    if (output_edit_->text().trimmed() == auto_path_) {
-        const QFileInfo info(auto_path_);
-        auto_path_ = QDir(info.path())
-                         .filePath(info.completeBaseName() + QLatin1Char('.') +
-                                   container_);
+    settings_.camera_index = camera_index_;
+    container_ = settings_.container_extension;
+    audio_codec_ = settings_.audio_codec;
+    audio_sample_rate_ = settings_.audio_sample_rate;
+    audio_bitrate_ = settings_.audio_bitrate;
+
+    SaveAppSettings(settings_);
+    ApplyAutoStart(settings_.auto_start);
+
+    const bool path_settings_changed =
+        container_ != previous_container ||
+        settings_.output_directory != previous_directory ||
+        settings_.auto_timestamp_filename != previous_timestamp;
+    if (path_is_auto && path_settings_changed) {
+        // Follow the new directory/format with our own generated path. A path
+        // the user typed or picked is left alone; Start validates the
+        // extension it actually carries.
+        auto_path_ = DefaultOutputPath();
         output_edit_->setText(auto_path_);
-    } else {
+        output_edit_->setCursorPosition(0);
+    } else if (container_ != previous_container) {
         ShowStatus(QStringLiteral("保存路径扩展名应与保存格式（.%1）一致")
                        .arg(container_),
                    false, 6000);
@@ -934,14 +1168,22 @@ void MainWindow::showEvent(QShowEvent* event) {
         effects_applied = true;
         ApplyWindowEffects();
     }
-    if (preview_started_) {
-        return;
-    }
     preview_started_ = true;
-    // The tick timer also drives the idle preview, so it must run before the
-    // first recording starts.
-    poll_timer_->start();
-    StartIdlePreview();
+    // Also covers restoring from the tray: the idle preview and meters were
+    // paused while the window was hidden.
+    if (!recording_) {
+        SetIdleSuspended(false);
+    }
+}
+
+void MainWindow::hideEvent(QHideEvent* event) {
+    QWidget::hideEvent(event);
+    // Minimization is handled by changeEvent(); this path is the tray hide,
+    // where the preview must not keep duplicating the desktop invisibly. An
+    // active recording keeps its pipeline alive.
+    if (!recording_ && !isMinimized()) {
+        SetIdleSuspended(true);
+    }
 }
 
 void MainWindow::resizeEvent(QResizeEvent* event) {
@@ -960,8 +1202,10 @@ void MainWindow::UpdateStatusGeometry() {
 
 void MainWindow::StartIdlePreview() {
     // Window and camera modes deliberately show a placeholder until recording
-    // starts; only the desktop-backed modes own an idle preview.
-    if (!has_display_ || recording_ || isMinimized() || selected_mode_ > 1) {
+    // starts; only the desktop-backed modes own an idle preview. A window
+    // hidden in the tray must not keep duplicating the desktop either.
+    if (!has_display_ || recording_ || isMinimized() || !isVisible() ||
+        selected_mode_ > 1) {
         return;
     }
     std::string error;
@@ -975,15 +1219,16 @@ void MainWindow::StartIdlePreview() {
 }
 
 QString MainWindow::DefaultOutputPath() const {
-    QString directory =
-        QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
-    if (directory.isEmpty()) {
-        directory = QDir::tempPath();
-    }
-    const QString name = QStringLiteral("Hmmob-%1.%2")
-                             .arg(QDateTime::currentDateTime().toString(
-                                      QStringLiteral("yyyyMMdd-HHmmss")),
-                                  container_);
+    const QString directory = settings_.output_directory.isEmpty()
+                                  ? DefaultOutputDirectory()
+                                  : settings_.output_directory;
+    const QString name =
+        settings_.auto_timestamp_filename
+            ? QStringLiteral("Hmmob-%1.%2")
+                  .arg(QDateTime::currentDateTime().toString(
+                           QStringLiteral("yyyyMMdd-HHmmss")),
+                       container_)
+            : QStringLiteral("Hmmob.%1").arg(container_);
     return QDir(directory).filePath(name);
 }
 
@@ -1328,6 +1573,12 @@ void MainWindow::FinalizeRecording() {
     } else {
         SetError(QString());
         ShowStatus(QStringLiteral("已保存：%1").arg(output_path_), false, 8000);
+        if (settings_.show_recording_complete_notification) {
+            ShowTrayMessage(
+                QStringLiteral("Hmmob 录屏"),
+                QStringLiteral("录制完成: %1")
+                    .arg(QDir::toNativeSeparators(output_path_)));
+        }
 
         // The next run must not reuse the file that was just written. Only
         // rotate the name while the field still holds our own suggestion;
@@ -1352,14 +1603,14 @@ void MainWindow::FinalizeRecording() {
     }
 
     // Resume the idle preview for the desktop-backed modes only; window and
-    // camera keep the recorder's last frame. If the window is minimized the
-    // preview is restarted on restore instead, and the poll timer must not
-    // keep ticking invisibly.
+    // camera keep the recorder's last frame. If the window is minimized or
+    // hidden in the tray the preview is restarted on restore instead, and the
+    // poll timer must not keep ticking invisibly.
     if (selected_mode_ == 0 || selected_mode_ == 1) {
         StartIdlePreview();
     }
     UpdateBadgeText();
-    if (isMinimized()) {
+    if (isMinimized() || !isVisible()) {
         poll_timer_->stop();
     }
 
@@ -1396,6 +1647,45 @@ void MainWindow::SetError(const QString& error) {
 void MainWindow::UpdateStatsLabels(const hmmob::RecorderStats& stats) {
     duration_label_->setText(FormatDuration(stats.elapsed_us));
     size_label_->setText(FormatSize(stats.encoded_bytes));
+}
+
+void MainWindow::CaptureSettingsScreenshots(const QString& directory) {
+    SyncSettingsFromUi();
+    QDir().mkpath(directory);
+    auto* dialog = new SettingsDialog(settings_, this);
+    dialog->setModal(false);
+    dialog->show();
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+
+    const QStringList names = {
+        QStringLiteral("general"), QStringLiteral("recording"),
+        QStringLiteral("shortcuts"), QStringLiteral("output"),
+        QStringLiteral("about")};
+    for (int i = 0; i < names.size(); ++i) {
+        dialog->SelectPage(i);
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+        dialog->repaint();
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+        const QString path = QDir(directory).filePath(
+            QStringLiteral("settings-%1-%2.png").arg(i + 1).arg(names.at(i)));
+        QImage image(dialog->size(), QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::white);
+        dialog->render(&image);
+        if (!image.save(path)) {
+            // This Qt build ships no PNG image plugin; BMP is built in, so
+            // the hook still produces inspectable output.
+            const QString bmp_path = path.left(path.size() - 4) +
+                                     QStringLiteral(".bmp");
+            if (!image.save(bmp_path)) {
+                std::fprintf(stderr, "failed to save settings screenshot: %s\n",
+                             bmp_path.toLocal8Bit().constData());
+            }
+        }
+    }
+
+    dialog->close();
+    delete dialog;
+    QTimer::singleShot(0, qApp, [] { QCoreApplication::exit(0); });
 }
 
 void MainWindow::StartSmoke(int seconds, const QString& path,
@@ -1681,6 +1971,15 @@ bool MainWindow::nativeEvent(const QByteArray& eventType, void* message,
 
 void MainWindow::closeEvent(QCloseEvent* event) {
     if (closing_) {
+        event->ignore();
+        return;
+    }
+    // 关闭窗口时最小化到托盘: hide instead of quitting. The tray's 退出
+    // action sets quitting_ and falls through to the normal shutdown path.
+    if (settings_.close_to_tray && !quitting_ && tray_icon_) {
+        hide();
+        ShowTrayMessage(QStringLiteral("Hmmob 录屏"),
+                        QStringLiteral("已最小化到托盘"));
         event->ignore();
         return;
     }

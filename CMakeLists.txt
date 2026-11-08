@@ -72,6 +72,7 @@ qt_add_executable(hmmob_ev_app WIN32
   src/app/ModeTile.cpp src/app/ModeTile.h
   src/app/TitleBar.cpp src/app/TitleBar.h
   src/app/SettingsDialog.cpp src/app/SettingsDialog.h
+  src/app/AppSettings.cpp src/app/AppSettings.h
   src/app/Controls.cpp src/app/Controls.h
   src/app/UiFont.h)
 target_link_libraries(hmmob_ev_app PRIVATE hmmob_core Qt6::Widgets dwmapi shell32)

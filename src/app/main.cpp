@@ -18,7 +18,9 @@ void PrintSmokeUsage() {
         "(default: screen)\n"
         "  --smoke-region <x,y,w,h>  display-local region for region mode\n"
         "  --smoke-window <n>        n-th capturable window (1-based)\n"
-        "  --smoke-camera <n>        camera device index (default: 0)\n");
+        "  --smoke-camera <n>        camera device index (default: 0)\n"
+        "  --settings-screenshot <dir>  render every settings page to image "
+        "files and exit\n");
 }
 
 bool ParseInt(const QString& text, int& out) {
@@ -54,7 +56,9 @@ bool ParseRegion(const QString& text, QRect& out) {
 
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
+    QApplication::setOrganizationName(QStringLiteral("Hmmob"));
     QApplication::setApplicationName(QStringLiteral("Hmmob EV"));
+    QApplication::setApplicationVersion(QStringLiteral("0.1.0"));
 
     app.setFont(UiFont(14));
 
@@ -170,8 +174,36 @@ int main(int argc, char** argv) {
         }
     }
 
-    MainWindow window;
-    window.show();
+    // Verification hook: render all settings pages without a real event
+    // session. Treated as automation so the tray and auto-start are inert.
+    const int screenshot_index =
+        arguments.indexOf(QStringLiteral("--settings-screenshot"));
+    QString screenshot_directory;
+    if (screenshot_index >= 0) {
+        if (screenshot_index + 1 >= arguments.size()) {
+            PrintSmokeUsage();
+            return 2;
+        }
+        screenshot_directory = arguments.at(screenshot_index + 1);
+        if (screenshot_directory.isEmpty()) {
+            PrintSmokeUsage();
+            return 2;
+        }
+    }
+
+    const bool automation = smoke_index >= 0 || screenshot_index >= 0;
+    MainWindow window(automation);
+    if (screenshot_index >= 0) {
+        window.show();
+        window.CaptureSettingsScreenshots(screenshot_directory);
+        return app.exec();
+    }
+
+    // 启动后最小化到托盘: keep the window hidden; the tray icon exists and
+    // the idle preview starts only when the window is first shown.
+    if (!window.StartHiddenToTray()) {
+        window.show();
+    }
     if (smoke_index >= 0) {
         window.StartSmoke(smoke_seconds, smoke_path, smoke_options);
     }
