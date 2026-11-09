@@ -62,6 +62,12 @@ AppSettings LoadAppSettings() {
         settings.audio_bitrate = audio_bitrate;
     }
 
+    const int countdown =
+        store.value(QStringLiteral("recording/countdown"), -1).toInt();
+    if (countdown == 0 || countdown == 3 || countdown == 5 || countdown == 10) {
+        settings.countdown_seconds = countdown;
+    }
+
     const QString video_codec =
         store.value(QStringLiteral("recording/video_codec")).toString();
     settings.video_codec = video_codec == QStringLiteral("h264")
@@ -98,8 +104,6 @@ AppSettings LoadAppSettings() {
 
     settings.output_directory =
         store.value(QStringLiteral("output/directory")).toString();
-    settings.auto_timestamp_filename =
-        store.value(QStringLiteral("output/auto_timestamp"), true).toBool();
 
     const QString language =
         store.value(QStringLiteral("appearance/language")).toString();
@@ -154,6 +158,8 @@ void SaveAppSettings(const AppSettings& settings) {
                    settings.audio_sample_rate);
     store.setValue(QStringLiteral("recording/audio_bitrate"),
                    settings.audio_bitrate);
+    store.setValue(QStringLiteral("recording/countdown"),
+                   settings.countdown_seconds);
     store.setValue(QStringLiteral("recording/video_codec"),
                    settings.video_codec);
     store.setValue(QStringLiteral("recording/fps"), settings.fps);
@@ -170,8 +176,6 @@ void SaveAppSettings(const AppSettings& settings) {
                    static_cast<int>(settings.audio_mode));
     store.setValue(QStringLiteral("output/directory"),
                    settings.output_directory);
-    store.setValue(QStringLiteral("output/auto_timestamp"),
-                   settings.auto_timestamp_filename);
     store.setValue(QStringLiteral("appearance/language"), settings.language);
     store.setValue(QStringLiteral("general/auto_start"), settings.auto_start);
     store.setValue(QStringLiteral("general/minimize_to_tray_on_start"),

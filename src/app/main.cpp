@@ -22,7 +22,9 @@ void PrintSmokeUsage() {
         "  --smoke-window <n>        n-th capturable window (1-based)\n"
         "  --smoke-camera <n>        camera device index (default: 0)\n"
         "  --settings-screenshot <dir>  render every settings page to image "
-        "files and exit\n");
+        "files and exit\n"
+        "  --ui-harness <dir>        exercise countdown/文件夹/滚轮 and write "
+        "screenshots, then exit\n");
 }
 
 bool ParseInt(const QString& text, int& out) {
@@ -198,8 +200,32 @@ int main(int argc, char** argv) {
         }
     }
 
-    const bool automation = smoke_index >= 0 || screenshot_index >= 0;
+    // Verification hook: drives the countdown overlay, folder-only output and
+    // wheel handling, then exits 0/1. Treated as automation like the other
+    // hooks, so it never touches the tray or auto-start.
+    const int harness_index =
+        arguments.indexOf(QStringLiteral("--ui-harness"));
+    QString harness_directory;
+    if (harness_index >= 0) {
+        if (harness_index + 1 >= arguments.size()) {
+            PrintSmokeUsage();
+            return 2;
+        }
+        harness_directory = arguments.at(harness_index + 1);
+        if (harness_directory.isEmpty()) {
+            PrintSmokeUsage();
+            return 2;
+        }
+    }
+
+    const bool automation =
+        smoke_index >= 0 || screenshot_index >= 0 || harness_index >= 0;
     MainWindow window(automation);
+    if (harness_index >= 0) {
+        window.show();
+        window.RunUiHarness(harness_directory);
+        return app.exec();
+    }
     if (screenshot_index >= 0) {
         window.show();
         window.CaptureSettingsScreenshots(screenshot_directory);

@@ -65,6 +65,7 @@ qt_add_executable(hmmob_ev_app WIN32
   src/app/main.cpp
   src/app/Logo.cpp src/app/Logo.h
   src/app/MainWindow.cpp src/app/MainWindow.h
+  src/app/CountdownOverlay.cpp src/app/CountdownOverlay.h
   src/app/PreviewWidget.cpp src/app/PreviewWidget.h
   src/app/RegionSelector.cpp src/app/RegionSelector.h
   src/app/WindowPickerDialog.cpp src/app/WindowPickerDialog.h

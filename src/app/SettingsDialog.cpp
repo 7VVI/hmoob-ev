@@ -593,6 +593,22 @@ QWidget* SettingsDialog::BuildRecordingPage() {
     compatibility_hint_->setContentsMargins(kLabelWidth + 16, 0, 0, 0);
     compatibility_hint_->setFixedHeight(18);
     layout->addWidget(compatibility_hint_);
+    layout->addSpacing(10);
+
+    countdown_combo_ = MakeCombo(page, 220);
+    countdown_combo_->setObjectName(QStringLiteral("countdownCombo"));
+    countdown_combo_->addItem(QStringLiteral("0 秒（立即开始）"), 0);
+    countdown_combo_->addItem(QStringLiteral("3 秒"), 3);
+    countdown_combo_->addItem(QStringLiteral("5 秒"), 5);
+    countdown_combo_->addItem(QStringLiteral("10 秒"), 10);
+    {
+        const int index =
+            countdown_combo_->findData(base_.countdown_seconds);
+        countdown_combo_->setCurrentIndex(index >= 0 ? index : 1);
+    }
+    layout->addWidget(
+        MakeLabeledRow(QStringLiteral("倒计时"), countdown_combo_, page));
+    layout->addSpacing(10);
 
     bitrate_combo_ = MakeCombo(page, 220);
     bitrate_combo_->setObjectName(QStringLiteral("bitrateCombo"));
@@ -785,15 +801,13 @@ QWidget* SettingsDialog::BuildOutputPage() {
     layout->addSpacing(16);
     layout->addWidget(MakeSectionTitle(QStringLiteral("文件命名"), page));
     layout->addSpacing(8);
-    auto_timestamp_check_ =
-        new ToggleCheckBox(QStringLiteral("自动使用时间戳文件名"), page);
-    auto_timestamp_check_->setObjectName(
-        QStringLiteral("autoTimestampCheck"));
-    auto_timestamp_check_->setChecked(base_.auto_timestamp_filename);
-    layout->addWidget(auto_timestamp_check_);
     auto* timestamp_hint = MakeHint(
-        QStringLiteral("文件名格式：Hmmob-yyyyMMdd-HHmmss.<保存格式>"), page);
-    timestamp_hint->setContentsMargins(26, 0, 0, 0);
+        QStringLiteral(
+            "每次开始录制都会自动生成文件名："
+            "Hmmob-yyyyMMdd-HHmmss.<保存格式>，同名时追加 -2、-3，"
+            "不会覆盖已有文件。"),
+        page);
+    timestamp_hint->setWordWrap(true);
     layout->addWidget(timestamp_hint);
     layout->addStretch(1);
     return page;
@@ -1043,6 +1057,8 @@ void SettingsDialog::ResetToDefaults() {
             sample_rate_combo_->findData(defaults.audio_sample_rate));
         audio_bitrate_combo_->setCurrentIndex(
             audio_bitrate_combo_->findData(defaults.audio_bitrate));
+        countdown_combo_->setCurrentIndex(
+            countdown_combo_->findData(defaults.countdown_seconds));
         if (camera_combo_->isEnabled()) {
             camera_combo_->setCurrentIndex(0);
         }
@@ -1052,7 +1068,6 @@ void SettingsDialog::ResetToDefaults() {
     directory_edit_->setText(
         QDir::toNativeSeparators(DefaultOutputDirectory()));
     directory_edit_->setCursorPosition(0);
-    auto_timestamp_check_->setChecked(defaults.auto_timestamp_filename);
 
     if (start_stop_edit_) {
         start_stop_edit_->setKeySequence(QKeySequence(
@@ -1087,12 +1102,12 @@ AppSettings SettingsDialog::Collect() const {
         audio_codec_combo_->currentData().toInt());
     result.audio_sample_rate = sample_rate_combo_->currentData().toInt();
     result.audio_bitrate = audio_bitrate_combo_->currentData().toInt();
+    result.countdown_seconds = countdown_combo_->currentData().toInt();
     if (camera_combo_->isEnabled()) {
         result.camera_index = camera_combo_->currentData().toInt();
     }
     result.output_directory =
         QDir::fromNativeSeparators(directory_edit_->text().trimmed());
-    result.auto_timestamp_filename = auto_timestamp_check_->isChecked();
     result.auto_start = auto_start_check_->isChecked();
     result.minimize_to_tray_on_start = start_hidden_check_->isChecked();
     result.close_to_tray = close_to_tray_check_->isChecked();

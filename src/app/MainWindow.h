@@ -29,6 +29,7 @@ class QShortcut;
 class QShowEvent;
 class QTimer;
 class QButtonGroup;
+class CountdownOverlay;
 class LevelMeter;
 class ModeTile;
 class NavTabButton;
@@ -70,6 +71,12 @@ public:
     // stats, then exits 0 (success) or 1 (failure).
     void StartSmoke(int seconds, const QString& path,
                     const SmokeOptions& options = SmokeOptions());
+
+    // Automated verification hook for the UI features that the smoke run
+    // cannot exercise: countdown overlay (including Esc cancellation),
+    // folder-only output and wheel handling. Writes screenshots and
+    // "<directory>/ui-harness.txt" to `directory`, then exits 0/1.
+    void RunUiHarness(const QString& directory);
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -113,13 +120,22 @@ private:
     void Tick();
     void RefreshStats();
     bool StartRecording();
+    // Called after the capture mode (and region/window) is resolved, either
+    // directly or when the countdown reaches zero.
+    bool StartRecordingNow();
+    void BeginCountdown();
+    void CancelCountdown();
+    void OnCountdownFinished();
     void StopRecording();
     void FinalizeRecording();
     void FinishSmoke(const hmmob::RecorderStats& stats, const QString& error);
 
     hmmob::RecorderConfig BuildConfig() const;
-    QString DefaultOutputPath() const;
-    QString RecordingCompatibilityError(const QString& path) const;
+    // Current destination folder shown in the bottom bar.
+    QString OutputDirectoryFromUi() const;
+    // Auto-generated Hmmob-yyyyMMdd-HHmmss.<ext>, never overwriting a file.
+    QString GenerateOutputPath() const;
+    QString RecordingCompatibilityError() const;
     void BrowseOutput();
 
     void SetConfigEnabled(bool enabled);
@@ -193,6 +209,8 @@ private:
     QShortcut* start_stop_shortcut_ = nullptr;
     QShortcut* show_hide_shortcut_ = nullptr;
     QShortcut* open_folder_shortcut_ = nullptr;
+    // Esc cancels the countdown even if focus moved off the overlay.
+    QShortcut* countdown_escape_shortcut_ = nullptr;
 
     struct ThemedIconLabel {
         QLabel* label = nullptr;
@@ -216,9 +234,11 @@ private:
     hmmob::AudioCodec audio_codec_ = hmmob::AudioCodec::Aac;
     int audio_sample_rate_ = 48000;
     int audio_bitrate_ = 192000;
+    int countdown_seconds_ = 3;
 
     QLineEdit* output_edit_ = nullptr;
     QPushButton* browse_button_ = nullptr;
+    CountdownOverlay* countdown_overlay_ = nullptr;
     RecordButton* start_button_ = nullptr;
     QLabel* status_label_ = nullptr;
     QLabel* duration_label_ = nullptr;
@@ -229,6 +249,7 @@ private:
     bool has_display_ = false;
     bool preview_started_ = false;
     bool recording_ = false;
+    bool countdown_active_ = false;
     bool stop_requested_ = false;
     bool closing_ = false;
     bool maximized_ = false;
@@ -238,10 +259,8 @@ private:
     int capture_width_ = 0;
     int capture_height_ = 0;
     QString output_path_;
-    // Last path this window generated itself (as opposed to one the user
-    // typed or picked). Decides whether the next run may regenerate a fresh
-    // filename instead of keeping the user's choice.
-    QString auto_path_;
+    // Config resolved by StartRecording() and used when the countdown ends.
+    hmmob::RecorderConfig pending_config_;
     QString last_error_;
     QString preview_error_detail_;
     std::shared_ptr<const hmmob::PreviewFrame> last_preview_;

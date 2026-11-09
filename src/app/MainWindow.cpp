@@ -1,5 +1,6 @@
 #include "app/MainWindow.h"
 
+#include <QAbstractItemView>
 #include <QAction>
 #include <QApplication>
 #include <QButtonGroup>
@@ -19,13 +20,16 @@
 #include <QGraphicsOpacityEffect>
 #include <QHBoxLayout>
 #include <QHideEvent>
+#include <QKeyEvent>
 #include <QKeySequence>
 #include <QImage>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QResizeEvent>
 #include <QScreen>
 #include <QScrollArea>
@@ -41,9 +45,11 @@
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <utility>
 
 #ifndef NOMINMAX
@@ -54,6 +60,7 @@
 #include <windowsx.h>
 
 #include "app/Controls.h"
+#include "app/CountdownOverlay.h"
 #include "app/IconRenderer.h"
 #include "app/LevelMeter.h"
 #include "app/Logo.h"
@@ -173,6 +180,7 @@ MainWindow::MainWindow(bool automation, QWidget* parent)
     audio_codec_ = settings_.audio_codec;
     audio_sample_rate_ = settings_.audio_sample_rate;
     audio_bitrate_ = settings_.audio_bitrate;
+    countdown_seconds_ = settings_.countdown_seconds;
 
     setWindowTitle(QStringLiteral("Hmmob 录屏"));
     setObjectName(QStringLiteral("root"));
@@ -224,6 +232,20 @@ void MainWindow::BuildUi() {
     preview_ = new PreviewWidget(content);
     content_layout->addWidget(preview_, 1);
 
+    countdown_overlay_ = new CountdownOverlay(preview_);
+    connect(countdown_overlay_, &CountdownOverlay::tick, this,
+            [this](int remaining) {
+                if (countdown_active_) {
+                    ShowStatus(
+                        QStringLiteral("%1 秒后开始录制…").arg(remaining),
+                        false, 0);
+                }
+            });
+    connect(countdown_overlay_, &CountdownOverlay::finished, this,
+            &MainWindow::OnCountdownFinished);
+    connect(countdown_overlay_, &CountdownOverlay::cancelled, this,
+            &MainWindow::CancelCountdown);
+
     auto* column = new QWidget;
     column->setObjectName(QStringLiteral("scrollContent"));
     auto* column_layout = new QVBoxLayout(column);
@@ -260,6 +282,18 @@ void MainWindow::BuildUi() {
     status_timer_ = new QTimer(this);
     status_timer_->setSingleShot(true);
     status_timer_->setInterval(4000);
+
+    // Window-wide so Esc still cancels when the overlay lost focus (for
+    // example after clicking the title bar).
+    countdown_escape_shortcut_ =
+        new QShortcut(QKeySequence(Qt::Key_Escape), this);
+    countdown_escape_shortcut_->setContext(Qt::WindowShortcut);
+    countdown_escape_shortcut_->setEnabled(false);
+    connect(countdown_escape_shortcut_, &QShortcut::activated, this, [this] {
+        if (countdown_active_) {
+            countdown_overlay_->Cancel();
+        }
+    });
 }
 
 QLabel* MainWindow::MakeIconLabel(Icon icon, int size, IconTone tone,
@@ -361,10 +395,9 @@ QWidget* MainWindow::BuildNavRow() {
     connect(settings_button_, &QPushButton::clicked, this,
             &MainWindow::OpenSettings);
     connect(open_files, &QPushButton::clicked, this, [this] {
-        const QString path =
-            QFileInfo(output_edit_->text().trimmed()).absolutePath();
-        if (path.isEmpty() ||
-            !QDesktopServices::openUrl(QUrl::fromLocalFile(path))) {
+        const QString directory = OutputDirectoryFromUi();
+        if (directory.isEmpty() ||
+            !QDesktopServices::openUrl(QUrl::fromLocalFile(directory))) {
             ShowStatus(QStringLiteral("无法打开保存文件夹"), true, 4000);
         }
     });
@@ -648,7 +681,7 @@ QWidget* MainWindow::BuildBottomBar() {
     layout->addWidget(
         MakeIconLabel(Icon::Folder, 22, IconTone::Secondary, bar));
     layout->addSpacing(10);
-    auto* save_label = new QLabel(QStringLiteral("保存路径"), bar);
+    auto* save_label = new QLabel(QStringLiteral("保存目录"), bar);
     save_label->setObjectName(QStringLiteral("secondaryLabel"));
     layout->addWidget(save_label);
     layout->addSpacing(18);
@@ -663,9 +696,11 @@ QWidget* MainWindow::BuildBottomBar() {
     path_layout->setSpacing(0);
     output_edit_ = new QLineEdit(path_box);
     output_edit_->setObjectName(QStringLiteral("pathEdit"));
-    output_edit_->setPlaceholderText(QStringLiteral("输出 MP4 路径"));
-    auto_path_ = DefaultOutputPath();
-    output_edit_->setText(auto_path_);
+    output_edit_->setPlaceholderText(QStringLiteral("保存目录"));
+    const QString directory = settings_.output_directory.isEmpty()
+                                  ? DefaultOutputDirectory()
+                                  : settings_.output_directory;
+    output_edit_->setText(QDir::toNativeSeparators(directory));
     output_edit_->setCursorPosition(0);
     path_layout->addWidget(output_edit_, 1);
     browse_button_ = new QPushButton(path_box);
@@ -677,7 +712,7 @@ QWidget* MainWindow::BuildBottomBar() {
     browse_button_->setIcon(
         IconRenderer::QIconFor(
             Icon::Folder, 20, Theme::Instance().ToneColor(IconTone::Secondary)));
-    browse_button_->setToolTip(QStringLiteral("选择保存位置"));
+    browse_button_->setToolTip(QStringLiteral("选择保存目录"));
     path_layout->addWidget(browse_button_);
     layout->addWidget(path_box, 2);
     layout->addSpacing(80);
@@ -871,6 +906,10 @@ void MainWindow::SyncSettingsFromUi() {
         settings_.system_device_id =
             system_device_combo_->currentData().toString();
     }
+    if (output_edit_) {
+        settings_.output_directory =
+            QDir::fromNativeSeparators(output_edit_->text().trimmed());
+    }
     if (mic_toggle_ && system_toggle_) {
         settings_.audio_mode = AudioModeFromFlags(
             mic_toggle_->isChecked(), system_toggle_->isChecked());
@@ -913,7 +952,7 @@ void MainWindow::CreateTray() {
 
     connect(show_action, &QAction::triggered, this, &MainWindow::ShowMainWindow);
     connect(tray_start_action_, &QAction::triggered, this, [this] {
-        if (recording_ || !CanStart()) {
+        if (recording_ || countdown_active_ || !CanStart()) {
             ShowTrayMessage(QStringLiteral("Hmmob 录屏"),
                             QStringLiteral("当前无法开始录制"));
             return;
@@ -953,7 +992,8 @@ void MainWindow::CreateTray() {
 
 void MainWindow::UpdateTrayMenu() {
     if (tray_start_action_) {
-        tray_start_action_->setEnabled(!recording_ && CanStart());
+        tray_start_action_->setEnabled(!recording_ && !countdown_active_ &&
+                                       CanStart());
     }
     if (tray_stop_action_) {
         tray_stop_action_->setEnabled(recording_);
@@ -1010,6 +1050,9 @@ void MainWindow::ConnectSignals() {
 
     connect(browse_button_, &QPushButton::clicked, this,
             &MainWindow::BrowseOutput);
+    // Editing the field directly picks a different destination folder.
+    connect(output_edit_, &QLineEdit::editingFinished, this,
+            [this] { PersistSettings(); });
     connect(start_button_, &QAbstractButton::clicked, this, [this] {
         if (recording_) {
             StopRecording();
@@ -1056,7 +1099,7 @@ void MainWindow::ConnectSignals() {
 }
 
 void MainWindow::SetMode(int mode) {
-    if (mode < 0 || mode > 3 || recording_) {
+    if (mode < 0 || mode > 3 || recording_ || countdown_active_) {
         return;
     }
     const bool changed = selected_mode_ != mode;
@@ -1232,12 +1275,11 @@ void MainWindow::InstallShortcuts() {
 }
 
 void MainWindow::OpenOutputFolder() {
-    QString directory = settings_.output_directory;
+    QString directory = OutputDirectoryFromUi();
     if (directory.isEmpty()) {
-        directory = QFileInfo(output_edit_->text().trimmed()).absolutePath();
-    }
-    if (directory.isEmpty()) {
-        directory = DefaultOutputDirectory();
+        directory = settings_.output_directory.isEmpty()
+                        ? DefaultOutputDirectory()
+                        : settings_.output_directory;
     }
     if (directory.isEmpty() ||
         !QDesktopServices::openUrl(QUrl::fromLocalFile(directory))) {
@@ -1246,17 +1288,12 @@ void MainWindow::OpenOutputFolder() {
 }
 
 void MainWindow::OpenSettings() {
-    if (recording_) {
+    if (recording_ || countdown_active_) {
         return;
     }
     // Pick up choices made directly on the main window (codec, fps, mode,
-    // devices) so the dialog edits and carries the current state.
+    // devices, folder) so the dialog edits and carries the current state.
     SyncSettingsFromUi();
-
-    const QString previous_container = settings_.container_extension;
-    const QString previous_directory = settings_.output_directory;
-    const bool previous_timestamp = settings_.auto_timestamp_filename;
-    const bool path_is_auto = output_edit_->text().trimmed() == auto_path_;
 
     SettingsDialog dialog(settings_, this);
     if (dialog.exec() != QDialog::Accepted) {
@@ -1276,28 +1313,21 @@ void MainWindow::OpenSettings() {
     audio_codec_ = settings_.audio_codec;
     audio_sample_rate_ = settings_.audio_sample_rate;
     audio_bitrate_ = settings_.audio_bitrate;
+    countdown_seconds_ = settings_.countdown_seconds;
+
+    // One source of truth for the destination folder: the bottom bar mirrors
+    // the value accepted in 输出设置.
+    if (settings_.output_directory.isEmpty()) {
+        settings_.output_directory = DefaultOutputDirectory();
+    }
+    output_edit_->setText(
+        QDir::toNativeSeparators(settings_.output_directory));
+    output_edit_->setCursorPosition(0);
 
     SaveAppSettings(settings_);
     ApplyAutoStart(settings_.auto_start);
     // New sequences take effect immediately after 保存设置.
     InstallShortcuts();
-
-    const bool path_settings_changed =
-        container_ != previous_container ||
-        settings_.output_directory != previous_directory ||
-        settings_.auto_timestamp_filename != previous_timestamp;
-    if (path_is_auto && path_settings_changed) {
-        // Follow the new directory/format with our own generated path. A path
-        // the user typed or picked is left alone; Start validates the
-        // extension it actually carries.
-        auto_path_ = DefaultOutputPath();
-        output_edit_->setText(auto_path_);
-        output_edit_->setCursorPosition(0);
-    } else if (container_ != previous_container) {
-        ShowStatus(QStringLiteral("保存路径扩展名应与保存格式（.%1）一致")
-                       .arg(container_),
-                   false, 6000);
-    }
 }
 
 void MainWindow::ShowStatus(const QString& text, bool error, int timeout_ms) {
@@ -1459,32 +1489,43 @@ void MainWindow::StartIdlePreview() {
     ShowPreviewError(QString());
 }
 
-QString MainWindow::DefaultOutputPath() const {
-    const QString directory = settings_.output_directory.isEmpty()
-                                  ? DefaultOutputDirectory()
-                                  : settings_.output_directory;
-    const QString name =
-        settings_.auto_timestamp_filename
-            ? QStringLiteral("Hmmob-%1.%2")
-                  .arg(QDateTime::currentDateTime().toString(
-                           QStringLiteral("yyyyMMdd-HHmmss")),
-                       container_)
-            : QStringLiteral("Hmmob.%1").arg(container_);
-    return QDir(directory).filePath(name);
+QString MainWindow::OutputDirectoryFromUi() const {
+    return output_edit_
+               ? QDir::fromNativeSeparators(output_edit_->text().trimmed())
+               : QString();
+}
+
+QString MainWindow::GenerateOutputPath() const {
+    const QString directory = OutputDirectoryFromUi();
+    if (directory.isEmpty()) {
+        return QString();
+    }
+    const QString base = QStringLiteral("Hmmob-%1").arg(
+        QDateTime::currentDateTime().toString(
+            QStringLiteral("yyyyMMdd-HHmmss")));
+    QString path = QDir(directory).filePath(
+        QStringLiteral("%1.%2").arg(base, container_));
+    // Never overwrite: two starts within one second get -2, -3, ...
+    for (int suffix = 2; QFileInfo::exists(path); ++suffix) {
+        path = QDir(directory).filePath(
+            QStringLiteral("%1-%2.%3").arg(base).arg(suffix).arg(container_));
+    }
+    return path;
 }
 
 void MainWindow::BrowseOutput() {
-    const QString filter =
-        QStringLiteral("%1 (*.%2)").arg(container_.toUpper(), container_);
-    const QString path = QFileDialog::getSaveFileName(
-        this, QStringLiteral("选择输出文件"), output_edit_->text(), filter);
-    if (!path.isEmpty()) {
-        output_edit_->setText(path);
+    const QString directory = QFileDialog::getExistingDirectory(
+        this, QStringLiteral("选择保存目录"), OutputDirectoryFromUi());
+    if (!directory.isEmpty()) {
+        output_edit_->setText(QDir::toNativeSeparators(directory));
+        output_edit_->setCursorPosition(0);
+        settings_.output_directory = QDir::fromNativeSeparators(directory);
+        PersistSettings();
     }
 }
 
-QString MainWindow::RecordingCompatibilityError(const QString& path) const {
-    const QString extension = QFileInfo(path).suffix().toLower();
+QString MainWindow::RecordingCompatibilityError() const {
+    const QString extension = container_.toLower();
     const bool known = extension == QStringLiteral("mp4") ||
                        extension == QStringLiteral("mov") ||
                        extension == QStringLiteral("mkv") ||
@@ -1548,7 +1589,8 @@ hmmob::RecorderConfig MainWindow::BuildConfig() const {
     // meters are decorative and never feed back into the recorder.
     config.system_gain = 1.0f;
     config.mic_gain = 1.0f;
-    config.output_path = output_edit_->text().trimmed().toStdString();
+    // Filled in by StartRecordingNow() once the countdown (if any) is over.
+    config.output_path.clear();
     config.duration_seconds = 0;
     config.preview_width = 640;
     config.preview_height = 360;
@@ -1557,7 +1599,7 @@ hmmob::RecorderConfig MainWindow::BuildConfig() const {
 }
 
 bool MainWindow::StartRecording() {
-    if (recording_) {
+    if (recording_ || countdown_active_) {
         return false;
     }
     const int mode = selected_mode_;
@@ -1570,28 +1612,28 @@ bool MainWindow::StartRecording() {
         SetError(QStringLiteral("未检测到摄像头"));
         return false;
     }
-    if (output_edit_->text().trimmed().isEmpty()) {
-        SetError(QStringLiteral("请选择输出路径"));
+
+    // The destination is a folder. The file name is generated at the moment
+    // the recorder actually starts, so cancelling a countdown never creates
+    // one. Validate that the folder exists or can be created.
+    const QString directory = smoke_
+                                  ? QFileInfo(smoke_path_).absolutePath()
+                                  : OutputDirectoryFromUi();
+    if (directory.isEmpty()) {
+        SetError(QStringLiteral("请选择保存目录"));
+        return false;
+    }
+    QDir folder(directory);
+    if (!folder.exists() && !QDir().mkpath(directory)) {
+        SetError(QStringLiteral("无法创建保存目录：%1")
+                     .arg(QDir::toNativeSeparators(directory)));
         return false;
     }
 
-    const QString path = output_edit_->text().trimmed();
-    const QString compatibility = RecordingCompatibilityError(path);
+    const QString compatibility = RecordingCompatibilityError();
     if (!compatibility.isEmpty()) {
         SetError(compatibility);
         return false;
-    }
-    // Never destroy an existing file without asking. Smoke runs are scripted
-    // and own their path, so they skip the prompt.
-    if (!smoke_ && QFileInfo::exists(path)) {
-        const QMessageBox::StandardButton answer = QMessageBox::question(
-            this, QStringLiteral("Hmmob 录屏"),
-            QStringLiteral("文件已存在，是否覆盖？\n%1")
-                .arg(QDir::toNativeSeparators(path)),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-        if (answer != QMessageBox::Yes) {
-            return false;
-        }
     }
 
     hmmob::RecorderConfig config = BuildConfig();
@@ -1669,7 +1711,41 @@ bool MainWindow::StartRecording() {
         }
     }
 
+    pending_config_ = config;
+
+    // Smoke runs start immediately; a user-facing start honours 倒计时.
+    if (!smoke_ && countdown_seconds_ > 0) {
+        BeginCountdown();
+        return true;
+    }
+    return StartRecordingNow();
+}
+
+bool MainWindow::StartRecordingNow() {
+    if (recording_) {
+        return false;
+    }
+    countdown_active_ = false;
+    countdown_escape_shortcut_->setEnabled(false);
+
+    QString path;
+    if (smoke_) {
+        path = smoke_path_;
+    } else {
+        path = GenerateOutputPath();
+    }
+    if (path.isEmpty()) {
+        SetError(QStringLiteral("请选择保存目录"));
+        SetConfigEnabled(true);
+        start_button_->SetBusy(false);
+        start_button_->setEnabled(CanStart());
+        StartIdlePreview();
+        return false;
+    }
     output_path_ = path;
+
+    hmmob::RecorderConfig config = pending_config_;
+    config.output_path = QDir::toNativeSeparators(path).toStdString();
 
     // The idle preview owns a desktop duplication for this output. Release it
     // (Stop joins within one capture timeout) before the recorder creates its
@@ -1691,6 +1767,7 @@ bool MainWindow::StartRecording() {
         SetError(QString::fromStdString(error));
         SetConfigEnabled(true);
         start_button_->SetRecording(false);
+        start_button_->SetBusy(false);
         start_button_->setEnabled(CanStart());
         StartIdlePreview();
         return false;
@@ -1713,15 +1790,59 @@ bool MainWindow::StartRecording() {
     capture_width_ = started_stats.display_width;
     capture_height_ = started_stats.display_height;
     if (capture_width_ <= 0 || capture_height_ <= 0) {
-        if (mode == 1) {
-            capture_width_ = selected_region.width();
-            capture_height_ = selected_region.height();
+        if (selected_mode_ == 1) {
+            capture_width_ = pending_config_.region_width;
+            capture_height_ = pending_config_.region_height;
         }
     }
     UpdateBadgeText();
     ShowStatus(QStringLiteral("录制中…"), false, 0);
     poll_timer_->start();
     return true;
+}
+
+void MainWindow::BeginCountdown() {
+    countdown_active_ = true;
+    countdown_escape_shortcut_->setEnabled(true);
+    SetConfigEnabled(false);
+    start_button_->SetBusy(false);
+    start_button_->setEnabled(false);
+    // Region selection released the idle preview; keep the desktop visible
+    // underneath the overlay while the countdown runs.
+    if (selected_mode_ <= 1) {
+        StartIdlePreview();
+    }
+    UpdateBadgeText();
+    ShowStatus(QStringLiteral("%1 秒后开始录制…").arg(countdown_seconds_),
+               false, 0);
+    countdown_overlay_->Start(countdown_seconds_);
+}
+
+void MainWindow::CancelCountdown() {
+    if (!countdown_active_) {
+        return;
+    }
+    countdown_active_ = false;
+    countdown_escape_shortcut_->setEnabled(false);
+    countdown_overlay_->Stop();
+    SetConfigEnabled(true);
+    start_button_->SetBusy(false);
+    start_button_->setEnabled(CanStart());
+    ShowStatus(QString(), false, 0);
+    if (selected_mode_ <= 1) {
+        StartIdlePreview();
+    }
+    UpdateBadgeText();
+}
+
+void MainWindow::OnCountdownFinished() {
+    if (!countdown_active_) {
+        return;
+    }
+    countdown_active_ = false;
+    countdown_escape_shortcut_->setEnabled(false);
+    countdown_overlay_->Stop();
+    StartRecordingNow();
 }
 
 void MainWindow::StopRecording() {
@@ -1830,21 +1951,6 @@ void MainWindow::FinalizeRecording() {
                 QStringLiteral("Hmmob 录屏"),
                 QStringLiteral("录制完成: %1")
                     .arg(QDir::toNativeSeparators(output_path_)));
-        }
-
-        // The next run must not reuse the file that was just written. Only
-        // rotate the name while the field still holds our own suggestion;
-        // a path the user typed or picked is kept.
-        if (output_edit_->text().trimmed() == auto_path_) {
-            QString next = DefaultOutputPath();
-            if (next == output_path_) {
-                const QFileInfo info(next);
-                next = QDir(info.path())
-                           .filePath(info.completeBaseName() +
-                                     QStringLiteral("-2.") + container_);
-            }
-            auto_path_ = next;
-            output_edit_->setText(auto_path_);
         }
     }
 
@@ -1958,6 +2064,380 @@ void MainWindow::CaptureSettingsScreenshots(const QString& directory) {
     QTimer::singleShot(0, qApp, [] { QCoreApplication::exit(0); });
 }
 
+void MainWindow::RunUiHarness(const QString& directory) {
+    const AppSettings original_settings = settings_;
+    const ThemeMode original_theme = Theme::Instance().mode();
+
+    QDir().mkpath(directory);
+    const QString recordings =
+        QDir(directory).filePath(QStringLiteral("recordings"));
+    QDir().mkpath(recordings);
+
+    QStringList report;
+    bool passed = true;
+    const auto check = [&](const QString& name, bool value,
+                           const QString& detail = QString()) {
+        if (!value) {
+            passed = false;
+        }
+        report << QStringLiteral("%1=%2%3")
+                      .arg(name, value ? QStringLiteral("pass")
+                                       : QStringLiteral("fail"),
+                           detail.isEmpty()
+                               ? QString()
+                               : QStringLiteral(" (%1)").arg(detail));
+    };
+    const auto pump_ms = [](int milliseconds) {
+        QElapsedTimer timer;
+        timer.start();
+        while (timer.elapsed() < milliseconds) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            QThread::msleep(5);
+        }
+    };
+    const auto pump_until = [](const std::function<bool()>& done,
+                               int timeout_ms) {
+        QElapsedTimer timer;
+        timer.start();
+        while (!done() && timer.elapsed() < timeout_ms) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            QThread::msleep(5);
+        }
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        return done();
+    };
+    const auto save_shot = [](QWidget* widget, const QString& base) {
+        QImage image(widget->size(), QImage::Format_ARGB32_Premultiplied);
+        image.fill(Theme::Instance().colors().window);
+        widget->render(&image);
+        if (image.save(base + QStringLiteral(".png"))) {
+            return base + QStringLiteral(".png");
+        }
+        if (image.save(base + QStringLiteral(".bmp"))) {
+            return base + QStringLiteral(".bmp");
+        }
+        return QString();
+    };
+    const auto native_clean = [](const QString& path) {
+        return QDir::cleanPath(QDir::fromNativeSeparators(path.trimmed()));
+    };
+
+    // -- Configure the run: screen mode, MP4, 3 s countdown, harness folder.
+    container_ = QStringLiteral("mp4");
+    countdown_seconds_ = 3;
+    SetMode(0);
+    output_edit_->setText(QDir::toNativeSeparators(recordings));
+    output_edit_->setCursorPosition(0);
+    settings_.output_directory = recordings;
+    Theme::Instance().SetMode(ThemeMode::Light);
+    pump_ms(500);
+
+    // -- Folder-only bottom bar.
+    const QString field_text = output_edit_->text();
+    check(QStringLiteral("folder_only"),
+          native_clean(field_text) == QDir::cleanPath(recordings) &&
+              QFileInfo(field_text).isDir(),
+          field_text);
+    const QString light_main =
+        save_shot(this, QDir(directory).filePath(QStringLiteral("main-light")));
+    check(QStringLiteral("screenshot_main_light"), !light_main.isEmpty(),
+          light_main);
+
+    // -- Settings page: directory sync, countdown combo and wheel handling.
+    {
+        SettingsDialog dialog(settings_, this);
+        dialog.SelectPage(1);
+        dialog.setModal(false);
+        dialog.show();
+        pump_ms(300);
+
+        const QString light_settings = save_shot(
+            &dialog,
+            QDir(directory).filePath(
+                QStringLiteral("settings-recording-light")));
+        check(QStringLiteral("screenshot_settings_light"),
+              !light_settings.isEmpty(), light_settings);
+
+        auto* format = dialog.findChild<QComboBox*>(
+            QStringLiteral("formatCombo"));
+        auto* countdown = dialog.findChild<QComboBox*>(
+            QStringLiteral("countdownCombo"));
+        auto* directory_edit = dialog.findChild<QLineEdit*>(
+            QStringLiteral("directoryEdit"));
+        check(QStringLiteral("countdown_combo_present"),
+              countdown != nullptr && countdown->count() == 4 &&
+                  countdown->currentData().toInt() == 3);
+        check(QStringLiteral("settings_directory_sync"),
+              directory_edit != nullptr &&
+                  native_clean(directory_edit->text()) ==
+                      QDir::cleanPath(recordings),
+              directory_edit ? directory_edit->text() : QString());
+
+        const auto post_wheel = [](QComboBox* combo) {
+            const QPoint center(combo->width() / 2, combo->height() / 2);
+            QWheelEvent wheel(QPointF(center),
+                              QPointF(combo->mapToGlobal(center)), QPoint(),
+                              QPoint(0, -120), Qt::NoButton, Qt::NoModifier,
+                              Qt::NoScrollPhase, false);
+            QApplication::sendEvent(combo, &wheel);
+        };
+        int index_before = format->currentIndex();
+        post_wheel(format);
+        check(QStringLiteral("wheel_format_closed_unchanged"),
+              format->currentIndex() == index_before,
+              QString::number(format->currentIndex()));
+        index_before = countdown->currentIndex();
+        post_wheel(countdown);
+        check(QStringLiteral("wheel_countdown_closed_unchanged"),
+              countdown->currentIndex() == index_before,
+              QString::number(countdown->currentIndex()));
+
+        // The dropdown still opens and the keys still select. Windows can
+        // refuse to show a popup while the dialog is not foreground yet, so
+        // activate it and give the popup a few frames.
+        dialog.raise();
+        dialog.activateWindow();
+        pump_ms(250);
+        format->showPopup();
+        bool popup_open = false;
+        for (int attempt = 0; attempt < 8 && !popup_open; ++attempt) {
+            pump_ms(100);
+            popup_open =
+                format->view() != nullptr && format->view()->isVisible();
+        }
+        const int before_key = format->currentIndex();
+        QKeyEvent down(QEvent::KeyPress, Qt::Key_Down, Qt::NoModifier);
+        QApplication::sendEvent(format, &down);
+        QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+        QApplication::sendEvent(format, &enter);
+        pump_ms(150);
+        format->hidePopup();
+        check(QStringLiteral("dropdown_opens"), popup_open);
+        check(QStringLiteral("keys_change_value"),
+              format->currentIndex() != before_key,
+              QStringLiteral("%1 -> %2")
+                  .arg(before_key)
+                  .arg(format->currentIndex()));
+
+        const int before_programmatic = format->currentIndex();
+        format->setCurrentIndex(
+            (before_programmatic + 1) % format->count());
+        check(QStringLiteral("programmatic_change"),
+              format->currentIndex() != before_programmatic);
+
+        Theme::Instance().SetMode(ThemeMode::Dark);
+        pump_ms(350);
+        const QString dark_settings = save_shot(
+            &dialog,
+            QDir(directory).filePath(
+                QStringLiteral("settings-recording-dark")));
+        check(QStringLiteral("screenshot_settings_dark"),
+              !dark_settings.isEmpty(), dark_settings);
+        dialog.close();
+        pump_ms(150);
+    }
+
+    const QString dark_main =
+        save_shot(this, QDir(directory).filePath(QStringLiteral("main-dark")));
+    check(QStringLiteral("screenshot_main_dark"), !dark_main.isEmpty(),
+          dark_main);
+
+    // -- Countdown: screenshots at 3/1 and Esc cancellation, per theme.
+    const auto countdown_cancel = [&](const QString& theme_name) {
+        const int files_before =
+            QDir(recordings).entryList(QDir::Files).size();
+        bool shot_three = false;
+        bool shot_one = false;
+        bool reached_one = false;
+        const QMetaObject::Connection connection = connect(
+            countdown_overlay_, &CountdownOverlay::tick, this,
+            [&](int remaining) {
+                if (remaining == 3 && !shot_three) {
+                    shot_three = !save_shot(
+                                      this, QDir(directory).filePath(
+                                                QStringLiteral(
+                                                    "countdown-%1-3s")
+                                                    .arg(theme_name)))
+                                      .isEmpty();
+                }
+                if (remaining == 1) {
+                    reached_one = true;
+                }
+            });
+        const bool began = StartRecording();
+        const bool reached =
+            pump_until([&] { return reached_one; }, 5000);
+        if (reached) {
+            shot_one = !save_shot(
+                              this, QDir(directory).filePath(
+                                        QStringLiteral("countdown-%1-1s")
+                                            .arg(theme_name)))
+                              .isEmpty();
+        }
+        QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QApplication::sendEvent(countdown_overlay_, &escape);
+        pump_ms(350);
+        disconnect(connection);
+
+        check(QStringLiteral("countdown_%1_began").arg(theme_name), began);
+        check(QStringLiteral("countdown_%1_reached_1s").arg(theme_name),
+              reached);
+        check(QStringLiteral("countdown_%1_esc_cancels").arg(theme_name),
+              !recording_ && !countdown_active_ &&
+                  !countdown_overlay_->IsActive());
+        check(QStringLiteral("countdown_%1_restores_start").arg(theme_name),
+              start_button_->isEnabled() && !status_is_error_);
+        check(QStringLiteral("countdown_%1_no_file").arg(theme_name),
+              QDir(recordings).entryList(QDir::Files).size() == files_before);
+        check(QStringLiteral("screenshot_countdown_%1_3s").arg(theme_name),
+              shot_three);
+        check(QStringLiteral("screenshot_countdown_%1_1s").arg(theme_name),
+              shot_one);
+    };
+    Theme::Instance().SetMode(ThemeMode::Light);
+    pump_ms(350);
+    countdown_cancel(QStringLiteral("light"));
+
+    Theme::Instance().SetMode(ThemeMode::Dark);
+    pump_ms(350);
+    countdown_cancel(QStringLiteral("dark"));
+    Theme::Instance().SetMode(ThemeMode::Light);
+    pump_ms(350);
+
+    // -- The overlay's 取消 button takes the same cancellation path.
+    {
+        const int files_before =
+            QDir(recordings).entryList(QDir::Files).size();
+        const bool began = StartRecording();
+        pump_ms(200);
+        QPushButton* cancel = countdown_overlay_->findChild<QPushButton*>();
+        const bool clicked = cancel != nullptr && cancel->isVisible();
+        if (clicked) {
+            cancel->click();
+        }
+        pump_ms(350);
+        check(QStringLiteral("countdown_cancel_button"),
+              began && clicked && !recording_ && !countdown_active_ &&
+                  QDir(recordings).entryList(QDir::Files).size() ==
+                      files_before);
+    }
+
+    // -- A real countdown recording lands in the folder with a timestamp name.
+    {
+        // Rotation: with the generated name occupied, the next attempt must
+        // pick a different file instead of overwriting it.
+        const QString probe = GenerateOutputPath();
+        QFile probe_file(probe);
+        const bool probe_created = probe_file.open(QIODevice::WriteOnly);
+        if (probe_created) {
+            probe_file.close();
+        }
+        const QString rotated = GenerateOutputPath();
+        check(QStringLiteral("rotation_never_overwrites"),
+              probe_created && QFileInfo::exists(probe) && rotated != probe &&
+                  !QFileInfo::exists(rotated),
+              QFileInfo(rotated).fileName());
+        QFile::remove(rotated);
+        QFile::remove(probe);
+
+        const QStringList before = QDir(recordings).entryList(QDir::Files);
+        QElapsedTimer timer;
+        timer.start();
+        const bool began = StartRecording();
+        const bool started =
+            pump_until([&] { return recording_; }, 8000);
+        const qint64 start_ms = timer.elapsed();
+        check(QStringLiteral("record_started"), began && started,
+              QStringLiteral("%1 ms").arg(start_ms));
+        check(QStringLiteral("countdown_about_3s"),
+              started && start_ms >= 2800 && start_ms <= 5000,
+              QStringLiteral("%1 ms").arg(start_ms));
+
+        pump_ms(2200);
+        StopRecording();
+        const bool finished =
+            pump_until([&] { return !recording_; }, 15000);
+        check(QStringLiteral("record_finished"), finished);
+
+        QString recorded;
+        const QStringList after = QDir(recordings).entryList(QDir::Files);
+        const QRegularExpression name_pattern(
+            QStringLiteral("^Hmmob-\\d{8}-\\d{6}(-\\d+)?\\.mp4$"));
+        for (const QString& name : after) {
+            if (!before.contains(name) &&
+                name_pattern.match(name).hasMatch()) {
+                recorded = QDir(recordings).filePath(name);
+                break;
+            }
+        }
+        const QFileInfo info(recorded);
+        check(QStringLiteral("recording_in_folder"),
+              !recorded.isEmpty() && info.absolutePath() ==
+                                          QDir(recordings).absolutePath(),
+              QDir::toNativeSeparators(recorded));
+        check(QStringLiteral("recording_nonempty"),
+              info.exists() && info.size() > 0,
+              QStringLiteral("%1 bytes").arg(info.size()));
+        report << QStringLiteral("recording_path=%1").arg(recorded);
+        report << QStringLiteral("countdown_start_ms=%1").arg(start_ms);
+    }
+
+    // -- Both folder entry points persist through QSettings (the same code
+    // path the next launch's LoadAppSettings() uses).
+    {
+        output_edit_->setText(QDir::toNativeSeparators(recordings));
+        SyncSettingsFromUi();
+        check(QStringLiteral("folder_from_bottom_bar"),
+              QDir::cleanPath(settings_.output_directory) ==
+                  QDir::cleanPath(recordings));
+        SaveAppSettings(settings_);
+        const AppSettings reloaded = LoadAppSettings();
+        check(QStringLiteral("persists_bottom_bar"),
+              native_clean(reloaded.output_directory) ==
+                  QDir::cleanPath(recordings),
+              reloaded.output_directory);
+
+        SettingsDialog dialog(settings_, this);
+        auto* directory_edit = dialog.findChild<QLineEdit*>(
+            QStringLiteral("directoryEdit"));
+        const QString alternate =
+            QDir(directory).filePath(QStringLiteral("alternate"));
+        QDir().mkpath(alternate);
+        directory_edit->setText(QDir::toNativeSeparators(alternate));
+        const AppSettings collected = dialog.settings();
+        check(QStringLiteral("folder_from_settings_page"),
+              native_clean(collected.output_directory) ==
+                  QDir::cleanPath(alternate));
+        SaveAppSettings(collected);
+        const AppSettings reloaded_settings = LoadAppSettings();
+        check(QStringLiteral("persists_settings_page"),
+              native_clean(reloaded_settings.output_directory) ==
+                  QDir::cleanPath(alternate),
+              reloaded_settings.output_directory);
+    }
+
+    // Leave the user's preferences exactly as they were.
+    settings_ = original_settings;
+    SaveAppSettings(original_settings);
+    Theme::Instance().SetMode(original_theme);
+
+    QFile file(QDir(directory).filePath(QStringLiteral("ui-harness.txt")));
+    if (file.open(QIODevice::WriteOnly | QIODevice::Text |
+                  QIODevice::Truncate)) {
+        QTextStream out(&file);
+        out.setEncoding(QStringConverter::Utf8);
+        out << "result=" << (passed ? "pass" : "fail") << '\n';
+        for (const QString& line : report) {
+            out << line << '\n';
+        }
+        out.flush();
+    }
+
+    QTimer::singleShot(0, qApp, [passed] {
+        QCoreApplication::exit(passed ? 0 : 1);
+    });
+}
+
 void MainWindow::StartSmoke(int seconds, const QString& path,
                             const SmokeOptions& options) {
     smoke_ = true;
@@ -1968,7 +2448,9 @@ void MainWindow::StartSmoke(int seconds, const QString& path,
     smoke_region_ = options.region;
     smoke_window_ = options.window;
     smoke_camera_ = options.camera;
-    output_edit_->setText(path);
+    // Smoke keeps its explicit file path; the bottom bar still shows a folder.
+    output_edit_->setText(QDir::toNativeSeparators(
+        QFileInfo(path).absolutePath()));
 
     if (!displays_.empty()) {
         SelectDisplay(displays_.front().index);

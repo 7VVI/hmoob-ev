@@ -13,6 +13,10 @@ public:
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    // A closed combo consumes no wheel input, so scrolling a page never
+    // changes a value by accident. With the popup open the wheel still
+    // scrolls the list as usual.
+    void wheelEvent(QWheelEvent* event) override;
 };
 
 // Checkbox with a hand-drawn rounded box and check mark.

@@ -89,6 +89,7 @@ private:
     QComboBox* audio_codec_combo_ = nullptr;
     QComboBox* sample_rate_combo_ = nullptr;
     QComboBox* audio_bitrate_combo_ = nullptr;
+    QComboBox* countdown_combo_ = nullptr;
     QComboBox* camera_combo_ = nullptr;
     QLabel* compatibility_hint_ = nullptr;
 
@@ -100,7 +101,6 @@ private:
 
     // 输出设置
     QLineEdit* directory_edit_ = nullptr;
-    ToggleCheckBox* auto_timestamp_check_ = nullptr;
 
     QPushButton* save_button_ = nullptr;
     bool hevc_ = false;

@@ -1,8 +1,10 @@
 #include "app/Controls.h"
 
+#include <QAbstractItemView>
 #include <QFontMetrics>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QWheelEvent>
 
 #include "app/IconRenderer.h"
 #include "app/Theme.h"
@@ -24,6 +26,16 @@ void StyledComboBox::paintEvent(QPaintEvent* event) {
     const QRectF arrow(width() - 30.0, (height() - 16.0) / 2.0, 16, 16);
     IconRenderer::Paint(painter, Icon::ChevronDown, arrow,
                         Theme::Instance().colors().iconMuted, 1.8);
+}
+
+void StyledComboBox::wheelEvent(QWheelEvent* event) {
+    // Ignore (rather than accept) the event so it propagates to the enclosing
+    // scroll area and the page scrolls instead of changing the selection.
+    if (!view() || !view()->isVisible()) {
+        event->ignore();
+        return;
+    }
+    QComboBox::wheelEvent(event);
 }
 
 ToggleCheckBox::ToggleCheckBox(const QString& text, QWidget* parent)
