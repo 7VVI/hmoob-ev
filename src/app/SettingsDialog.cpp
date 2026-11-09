@@ -840,12 +840,6 @@ QWidget* SettingsDialog::BuildAboutPage() {
     };
     add_paragraph(QStringLiteral(
         "一款面向 Windows 的屏幕录制工具，支持全屏、区域、窗口与摄像头录制。"));
-    add_paragraph(QStringLiteral(
-        "采集使用 DXGI Desktop Duplication 与 Windows Graphics Capture，硬件"
-        "编码基于 AMD AMF，封装与音频处理使用 FFmpeg 与 WASAPI。"));
-    add_paragraph(QStringLiteral(
-        "本项目为净室（clean-room）实现，界面与代码均由本项目独立完成，不"
-        "包含第三方专有代码。"));
     layout->addStretch(1);
     return page;
 }
