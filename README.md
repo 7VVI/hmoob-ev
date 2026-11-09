@@ -75,6 +75,19 @@ $cmake = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7
 .\build\release\Release\hmmob_ev_app.exe --smoke 5 C:\temp\ui-smoke.mp4
 ```
 
+## 发布包
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 -Version 0.1.1
+```
+
+产物在 `dist/`：
+
+- `Hmmob-EV-0.1.1-win64.zip` — 绿色版，解压后直接运行 `hmmob_ev_app.exe`，无需安装。
+- `Hmmob-EV-0.1.1-win64-setup.exe` — 安装包（Inno Setup），按用户安装到 `%LOCALAPPDATA%\Programs\Hmmob EV`，无需管理员权限；含开始菜单快捷方式、可选桌面快捷方式与卸载程序。
+
+安装包需要本机安装 Inno Setup 6（`ISCC.exe`）；缺失时脚本只生成绿色 zip 并给出提示。开发构建可直接运行 `build\release\Release\hmmob_ev_app.exe`。
+
 ### 应用标志
 
 界面中的标志由 `src/app/Logo.cpp` 使用 QPainter 实时绘制（运行时不需要图片插件），用于标题栏、设置窗口、关于我们、任务栏窗口图标与托盘图标。可分发素材位于 `assets/`：`logo.svg`（矢量源）、`logo-512.png` / `logo-256.png` / `logo-64.png`（由 1024 母版缩放）与多尺寸 `logo.ico`（16/24/32/48/64/128/256）。构建时 `src/app/app.rc` 将 `logo.ico` 嵌入 `hmmob_ev_app.exe`，资源管理器、任务栏与 Alt+Tab 直接显示该图标；`assets/logo-concepts/` 保留设计阶段的概念图。
