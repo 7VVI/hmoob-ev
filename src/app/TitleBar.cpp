@@ -128,6 +128,12 @@ void TitleBar::ApplyTheme() {
     update();
 }
 
+void TitleBar::SetTitle(const QString& title) {
+    if (title_label_) {
+        title_label_->setText(title);
+    }
+}
+
 void TitleBar::SetMaximized(bool maximized) {
     maximized_ = maximized;
     static_cast<WindowButton*>(maximize_button_)

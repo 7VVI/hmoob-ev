@@ -61,6 +61,7 @@
 
 #include "app/Controls.h"
 #include "app/CountdownOverlay.h"
+#include "app/FileManagerWindow.h"
 #include "app/IconRenderer.h"
 #include "app/LevelMeter.h"
 #include "app/Logo.h"
@@ -386,7 +387,7 @@ QWidget* MainWindow::BuildNavRow() {
     };
     settings_button_ = make_action(Icon::Gear, QStringLiteral("设置"));
     open_files_button_ =
-        make_action(Icon::Folder, QStringLiteral("打开文件"));
+        make_action(Icon::Folder, QStringLiteral("文件管理"));
     auto* open_files = open_files_button_;
     layout->addWidget(settings_button_);
     layout->addSpacing(16);
@@ -394,13 +395,8 @@ QWidget* MainWindow::BuildNavRow() {
 
     connect(settings_button_, &QPushButton::clicked, this,
             &MainWindow::OpenSettings);
-    connect(open_files, &QPushButton::clicked, this, [this] {
-        const QString directory = OutputDirectoryFromUi();
-        if (directory.isEmpty() ||
-            !QDesktopServices::openUrl(QUrl::fromLocalFile(directory))) {
-            ShowStatus(QStringLiteral("无法打开保存文件夹"), true, 4000);
-        }
-    });
+    connect(open_files, &QPushButton::clicked, this,
+            &MainWindow::OpenFileManager);
     return nav;
 }
 
@@ -927,6 +923,7 @@ void MainWindow::PersistSettings() {
     }
     SyncSettingsFromUi();
     SaveAppSettings(settings_);
+    SyncFileManagerDirectory();
 }
 
 bool MainWindow::StartHiddenToTray() const {
@@ -1287,6 +1284,36 @@ void MainWindow::OpenOutputFolder() {
     }
 }
 
+void MainWindow::OpenFileManager() {
+    if (!file_manager_) {
+        file_manager_ = new FileManagerWindow(this);
+    }
+    QString directory = OutputDirectoryFromUi();
+    if (directory.isEmpty()) {
+        directory = settings_.output_directory.isEmpty()
+                        ? DefaultOutputDirectory()
+                        : settings_.output_directory;
+    }
+    file_manager_->SetDirectory(directory);
+    // Clicking the nav button always rescans, even when the window is already
+    // open on the current folder.
+    file_manager_->Refresh();
+    file_manager_->ShowNear(this);
+}
+
+void MainWindow::SyncFileManagerDirectory() {
+    if (!file_manager_) {
+        return;
+    }
+    QString directory = OutputDirectoryFromUi();
+    if (directory.isEmpty()) {
+        directory = settings_.output_directory.isEmpty()
+                        ? DefaultOutputDirectory()
+                        : settings_.output_directory;
+    }
+    file_manager_->SetDirectory(directory);
+}
+
 void MainWindow::OpenSettings() {
     if (recording_ || countdown_active_) {
         return;
@@ -1328,6 +1355,7 @@ void MainWindow::OpenSettings() {
     ApplyAutoStart(settings_.auto_start);
     // New sequences take effect immediately after 保存设置.
     InstallShortcuts();
+    SyncFileManagerDirectory();
 }
 
 void MainWindow::ShowStatus(const QString& text, bool error, int timeout_ms) {
@@ -1946,6 +1974,9 @@ void MainWindow::FinalizeRecording() {
     } else {
         SetError(QString());
         ShowStatus(QStringLiteral("已保存：%1").arg(output_path_), false, 8000);
+        if (file_manager_ && file_manager_->isVisible()) {
+            file_manager_->Refresh();
+        }
         if (settings_.show_recording_complete_notification) {
             ShowTrayMessage(
                 QStringLiteral("Hmmob 录屏"),
@@ -2436,6 +2467,59 @@ void MainWindow::RunUiHarness(const QString& directory) {
     QTimer::singleShot(0, qApp, [passed] {
         QCoreApplication::exit(passed ? 0 : 1);
     });
+}
+
+void MainWindow::RunFileManagerHarness(const QString& directory) {
+    const QString cleaned =
+        QDir::cleanPath(QDir::fromNativeSeparators(directory));
+    QDir().mkpath(cleaned);
+
+    // Drive the real nav button so the main-window integration is part of the
+    // verification instead of instantiating the window directly.
+    output_edit_->setText(QDir::toNativeSeparators(cleaned));
+    output_edit_->setCursorPosition(0);
+    settings_.output_directory = cleaned;
+    const QString button_text =
+        open_files_button_ ? open_files_button_->text() : QString();
+    if (open_files_button_) {
+        open_files_button_->click();
+    }
+    const bool opens = file_manager_ != nullptr &&
+                       file_manager_->isVisible() &&
+                       file_manager_->directory() == cleaned;
+
+    // Editing the save directory must move the open library with it.
+    const QString alternate = QDir(cleaned).filePath(
+        QStringLiteral("empty-folder"));
+    QDir().mkpath(alternate);
+    output_edit_->setText(QDir::toNativeSeparators(alternate));
+    SyncFileManagerDirectory();
+    const bool follows = file_manager_ != nullptr &&
+                         file_manager_->directory() ==
+                             QDir::cleanPath(alternate);
+    output_edit_->setText(QDir::toNativeSeparators(cleaned));
+    SyncFileManagerDirectory();
+    const bool returns = file_manager_ != nullptr &&
+                         file_manager_->directory() == cleaned;
+
+    QFile integration(QDir(cleaned).filePath(
+        QStringLiteral("file-manager-integration.txt")));
+    if (integration.open(QIODevice::WriteOnly | QIODevice::Text |
+                         QIODevice::Truncate)) {
+        QTextStream out(&integration);
+        out.setEncoding(QStringConverter::Utf8);
+        out << "nav_button=" << button_text << '\n';
+        out << "opens_library=" << (opens ? "pass" : "fail") << '\n';
+        out << "follows_folder_change=" << (follows ? "pass" : "fail") << '\n';
+        out << "returns_to_save_folder=" << (returns ? "pass" : "fail") << '\n';
+        out.flush();
+        integration.close();
+    }
+
+    if (!file_manager_) {
+        file_manager_ = new FileManagerWindow(this);
+    }
+    file_manager_->RunHarness(cleaned);
 }
 
 void MainWindow::StartSmoke(int seconds, const QString& path,

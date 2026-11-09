@@ -30,6 +30,7 @@ class QShowEvent;
 class QTimer;
 class QButtonGroup;
 class CountdownOverlay;
+class FileManagerWindow;
 class LevelMeter;
 class ModeTile;
 class NavTabButton;
@@ -77,6 +78,11 @@ public:
     // folder-only output and wheel handling. Writes screenshots and
     // "<directory>/ui-harness.txt" to `directory`, then exits 0/1.
     void RunUiHarness(const QString& directory);
+
+    // Automated verification hook for the in-app file manager: opens it on
+    // `directory`, renders every state in both themes, exercises the file
+    // operations and exits 0/1.
+    void RunFileManagerHarness(const QString& directory);
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -150,6 +156,9 @@ private:
     void UpdateAudioModeUi();
     void InstallShortcuts();
     void OpenOutputFolder();
+    void OpenFileManager();
+    // Keeps the open library pointed at the current save directory.
+    void SyncFileManagerDirectory();
     void OpenSettings();
 
     void SyncSettingsFromUi();
@@ -205,6 +214,7 @@ private:
     LevelMeter* system_meter_ = nullptr;
     QPushButton* settings_button_ = nullptr;
     QPushButton* open_files_button_ = nullptr;
+    FileManagerWindow* file_manager_ = nullptr;
 
     QShortcut* start_stop_shortcut_ = nullptr;
     QShortcut* show_hide_shortcut_ = nullptr;

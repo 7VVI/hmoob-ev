@@ -304,6 +304,97 @@ void PaintMoon(QPainter& p, const QColor& color, qreal stroke) {
     p.drawPath(full.subtracted(cut));
 }
 
+void PaintSearch(QPainter& p, const QColor& color, qreal stroke) {
+    p.setPen(QPen(color, stroke, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(QPointF(10.8, 10.8), 5.8, 5.8);
+    p.drawLine(QPointF(15.2, 15.2), QPointF(20.2, 20.2));
+}
+
+void PaintGrid(QPainter& p, const QColor& color, qreal stroke) {
+    p.setPen(QPen(color, stroke, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+    p.drawRoundedRect(QRectF(3.6, 3.6, 7.0, 7.0), 1.6, 1.6);
+    p.drawRoundedRect(QRectF(13.4, 3.6, 7.0, 7.0), 1.6, 1.6);
+    p.drawRoundedRect(QRectF(3.6, 13.4, 7.0, 7.0), 1.6, 1.6);
+    p.drawRoundedRect(QRectF(13.4, 13.4, 7.0, 7.0), 1.6, 1.6);
+}
+
+void PaintListView(QPainter& p, const QColor& color, qreal stroke) {
+    p.setPen(QPen(color, qMax<qreal>(stroke, 1.6), Qt::SolidLine,
+                  Qt::RoundCap));
+    for (const qreal y : {6.6, 12.0, 17.4}) {
+        p.drawLine(QPointF(9.4, y), QPointF(20.2, y));
+    }
+    p.setPen(Qt::NoPen);
+    p.setBrush(color);
+    for (const qreal y : {6.6, 12.0, 17.4}) {
+        p.drawRoundedRect(QRectF(3.6, y - 1.2, 2.4, 2.4), 0.7, 0.7);
+    }
+}
+
+void PaintRefresh(QPainter& p, const QColor& color, qreal stroke) {
+    p.setPen(QPen(color, stroke, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+    // Three-quarter circle with a tangential arrowhead, so the direction of
+    // the refresh reads at 16 px.
+    p.drawArc(QRectF(4.2, 4.2, 15.6, 15.6), 40 * 16, 280 * 16);
+    const qreal angle = qDegreesToRadians(320.0);
+    const QPointF end(12.0 + 7.8 * qCos(angle), 12.0 - 7.8 * qSin(angle));
+    const QPointF tangent(-qSin(angle), -qCos(angle));
+    const QPointF radial(qCos(angle), -qSin(angle));
+    const QPointF back = end - tangent * 4.0;
+    p.drawPolyline(QPolygonF{back + radial * 2.6, end, back - radial * 2.6});
+}
+
+void PaintEdit(QPainter& p, const QColor& color, qreal stroke) {
+    p.setPen(QPen(color, stroke, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+    QPainterPath body;
+    body.moveTo(4.0, 20.0);
+    body.lineTo(4.9, 16.2);
+    body.lineTo(16.8, 4.3);
+    body.quadTo(17.9, 3.2, 19.0, 4.3);
+    body.lineTo(19.7, 5.0);
+    body.quadTo(20.8, 6.1, 19.7, 7.2);
+    body.lineTo(7.8, 19.1);
+    body.closeSubpath();
+    p.drawPath(body);
+    p.drawLine(QPointF(15.4, 5.7), QPointF(18.3, 8.6));
+}
+
+void PaintTrash(QPainter& p, const QColor& color, qreal stroke) {
+    p.setPen(QPen(color, stroke, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+    p.drawLine(QPointF(3.8, 7.0), QPointF(20.2, 7.0));
+    p.drawLine(QPointF(9.2, 4.2), QPointF(9.2, 7.0));
+    p.drawLine(QPointF(14.8, 4.2), QPointF(14.8, 7.0));
+    QPainterPath body;
+    body.moveTo(5.8, 9.2);
+    body.lineTo(7.0, 20.0);
+    body.lineTo(17.0, 20.0);
+    body.lineTo(18.2, 9.2);
+    p.drawPath(body);
+    p.drawLine(QPointF(10.2, 12.2), QPointF(10.6, 17.2));
+    p.drawLine(QPointF(13.8, 12.2), QPointF(13.4, 17.2));
+}
+
+void PaintCalendar(QPainter& p, const QColor& color, qreal stroke) {
+    p.setPen(QPen(color, stroke, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+    p.drawRoundedRect(QRectF(3.6, 5.4, 16.8, 14.6), 2.0, 2.0);
+    p.drawLine(QPointF(3.6, 10.0), QPointF(20.4, 10.0));
+    p.drawLine(QPointF(8.2, 3.4), QPointF(8.2, 6.6));
+    p.drawLine(QPointF(15.8, 3.4), QPointF(15.8, 6.6));
+    p.setPen(Qt::NoPen);
+    p.setBrush(color);
+    for (const qreal y : {12.4, 15.8}) {
+        for (const qreal x : {7.2, 11.4, 15.6}) {
+            p.drawEllipse(QPointF(x, y), 0.9, 0.9);
+        }
+    }
+}
+
 }  // namespace
 
 namespace IconRenderer {
@@ -435,6 +526,27 @@ void Paint(QPainter& painter, Icon icon, const QRectF& rect,
             break;
         case Icon::Moon:
             PaintMoon(painter, color, stroke);
+            break;
+        case Icon::Search:
+            PaintSearch(painter, color, stroke);
+            break;
+        case Icon::Grid:
+            PaintGrid(painter, color, stroke);
+            break;
+        case Icon::ListView:
+            PaintListView(painter, color, stroke);
+            break;
+        case Icon::Refresh:
+            PaintRefresh(painter, color, stroke);
+            break;
+        case Icon::Edit:
+            PaintEdit(painter, color, stroke);
+            break;
+        case Icon::Trash:
+            PaintTrash(painter, color, stroke);
+            break;
+        case Icon::Calendar:
+            PaintCalendar(painter, color, stroke);
             break;
     }
     painter.restore();

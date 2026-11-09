@@ -15,6 +15,8 @@ public:
     explicit TitleBar(QWidget* parent = nullptr);
 
     void SetMaximized(bool maximized);
+    // Caption text; the main window keeps the default "Hmmob 录屏".
+    void SetTitle(const QString& title);
     void ApplyTheme();
 
 signals:

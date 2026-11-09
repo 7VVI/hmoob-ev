@@ -40,6 +40,13 @@ enum class Icon {
     Keyboard,
     Sun,
     Moon,
+    Search,
+    Grid,
+    ListView,
+    Refresh,
+    Edit,
+    Trash,
+    Calendar,
 };
 
 namespace IconRenderer {

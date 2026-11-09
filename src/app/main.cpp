@@ -24,7 +24,9 @@ void PrintSmokeUsage() {
         "  --settings-screenshot <dir>  render every settings page to image "
         "files and exit\n"
         "  --ui-harness <dir>        exercise countdown/文件夹/滚轮 and write "
-        "screenshots, then exit\n");
+        "screenshots, then exit\n"
+        "  --file-manager-harness <dir>  render the file manager states, "
+        "exercise file operations, then exit\n");
 }
 
 bool ParseInt(const QString& text, int& out) {
@@ -218,9 +220,32 @@ int main(int argc, char** argv) {
         }
     }
 
-    const bool automation =
-        smoke_index >= 0 || screenshot_index >= 0 || harness_index >= 0;
+    // Verification hook for the in-app library: scans `directory`, renders
+    // grid/list/details/search/empty states in both themes, exercises
+    // rename/delete, then exits 0/1.
+    const int file_manager_index =
+        arguments.indexOf(QStringLiteral("--file-manager-harness"));
+    QString file_manager_directory;
+    if (file_manager_index >= 0) {
+        if (file_manager_index + 1 >= arguments.size()) {
+            PrintSmokeUsage();
+            return 2;
+        }
+        file_manager_directory = arguments.at(file_manager_index + 1);
+        if (file_manager_directory.isEmpty()) {
+            PrintSmokeUsage();
+            return 2;
+        }
+    }
+
+    const bool automation = smoke_index >= 0 || screenshot_index >= 0 ||
+                            harness_index >= 0 || file_manager_index >= 0;
     MainWindow window(automation);
+    if (file_manager_index >= 0) {
+        window.show();
+        window.RunFileManagerHarness(file_manager_directory);
+        return app.exec();
+    }
     if (harness_index >= 0) {
         window.show();
         window.RunUiHarness(harness_directory);

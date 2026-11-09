@@ -75,6 +75,8 @@ qt_add_executable(hmmob_ev_app WIN32
   src/app/ModeTile.cpp src/app/ModeTile.h
   src/app/TitleBar.cpp src/app/TitleBar.h
   src/app/SettingsDialog.cpp src/app/SettingsDialog.h
+  src/app/FileManagerWindow.cpp src/app/FileManagerWindow.h
+  src/app/VideoThumbnail.cpp src/app/VideoThumbnail.h
   src/app/AppSettings.cpp src/app/AppSettings.h
   src/app/Theme.cpp src/app/Theme.h
   src/app/Controls.cpp src/app/Controls.h
