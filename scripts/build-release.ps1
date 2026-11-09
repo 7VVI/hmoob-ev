@@ -1,9 +1,9 @@
 # Build both release artifacts:
 #   dist\Hmmob-EV-<version>-win64.zip           portable ("green") build
 #   dist\Hmmob-EV-<version>-win64-setup.exe     per-user installer (Inno Setup)
-# Usage: powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 [-Version 0.1.1]
+# Usage: powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 [-Version 0.1.2]
 param(
-    [string]$Version = "0.1.1"
+    [string]$Version = "0.1.2"
 )
 
 $ErrorActionPreference = "Stop"

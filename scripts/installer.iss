@@ -1,9 +1,9 @@
 ; Inno Setup script for Hmmob EV.
-; Build with: ISCC.exe /DMyAppVersion=0.1.1 scripts\installer.iss
+; Build with: ISCC.exe /DMyAppVersion=0.1.2 scripts\installer.iss
 ; Expects dist\Hmmob-EV-<version>-win64 to exist (scripts\package.ps1).
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.1"
+  #define MyAppVersion "0.1.2"
 #endif
 
 #define MyAppName "Hmmob EV"
